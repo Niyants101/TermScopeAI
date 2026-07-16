@@ -19,6 +19,143 @@ function canonicalUrl(value) {
   }
 }
 
+const COMMON_SECOND_LEVEL_DOMAINS = new Set([
+  "ac",
+  "co",
+  "com",
+  "edu",
+  "gov",
+  "net",
+  "org"
+]);
+
+function siteKeyFromHostname(hostname) {
+  const parts = String(hostname || "")
+    .toLowerCase()
+    .replace(/^www\./, "")
+    .split(".")
+    .filter(Boolean);
+
+  if (parts.length <= 2) return parts.join(".");
+
+  const last = parts.at(-1);
+  const secondLast = parts.at(-2);
+
+  if (
+    last.length === 2 &&
+    COMMON_SECOND_LEVEL_DOMAINS.has(secondLast) &&
+    parts.length >= 3
+  ) {
+    return parts.slice(-3).join(".");
+  }
+
+  return parts.slice(-2).join(".");
+}
+
+function hostnameFromItem(item = {}) {
+  if (item.hostname) return String(item.hostname).replace(/^www\./, "");
+
+  try {
+    return new URL(item.url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function libraryIdentityKey(item = {}) {
+  const siteKey =
+    item.siteKey || siteKeyFromHostname(hostnameFromItem(item)) || "website";
+  const type = item.type === "privacy" ? "privacy" : "terms";
+  return `${String(siteKey).toLowerCase()}:${type}`;
+}
+
+function brandFromHostname(hostname) {
+  const siteKey = siteKeyFromHostname(hostname);
+  const first = siteKey.split(".")[0] || "Website";
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+function normalizedPolicyLabel(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isPrimaryPolicyLabel(label, type) {
+  const value = normalizedPolicyLabel(label)
+    .replace(/^(?:read|view|see|open)\s+(?:our|the)?\s*/i, "")
+    .replace(/^(?:our|the)\s+/i, "")
+    .trim();
+
+  if (type === "terms") {
+    return /^(?:(?:[a-z0-9.'’ -]+)\s+)?(?:terms|terms of use|terms of service|terms and conditions|terms & conditions|conditions of use|user agreement|service agreement)$/i.test(
+      value
+    );
+  }
+
+  return /^(?:(?:[a-z0-9.'’ -]+)\s+)?(?:privacy|privacy policy|privacy notice|privacy statement|data policy)$/i.test(
+    value
+  );
+}
+
+function isSupplementaryPolicyLabel(label) {
+  return /\b(?:preview|new terms|generative|prohibited|acceptable use|additional|supplemental|service-specific|service specific|technology|technologies|cookies?|faq|overview|updates?|definitions?|government|children|safety|community|advertising|developer|api|content policy|product-specific|product specific)\b/i.test(
+    label
+  );
+}
+
+function libraryItemScore(item = {}) {
+  const label = normalizedPolicyLabel(item.label);
+  const type = item.type === "privacy" ? "privacy" : "terms";
+  let score = 0;
+
+  if (isPrimaryPolicyLabel(label, type)) score += 120;
+  if (label.length > 0 && label.length <= 36) score += 15;
+  if (Array.isArray(item.risks) && item.risks.length) score += 10;
+  if (isSupplementaryPolicyLabel(label)) score -= 180;
+  if (/privacy/.test(label) && /terms/.test(label)) score -= 200;
+
+  return score;
+}
+
+function choosePreferredItem(first, second) {
+  if (!first) return second;
+  if (!second) return first;
+
+  const firstScore = libraryItemScore(first);
+  const secondScore = libraryItemScore(second);
+
+  if (firstScore !== secondScore) {
+    return firstScore > secondScore ? first : second;
+  }
+
+  return Number(first.analyzedAt || 0) >= Number(second.analyzedAt || 0)
+    ? first
+    : second;
+}
+
+function deduplicatedLibraryItems(source) {
+  const unique = new Map();
+
+  for (const item of Object.values(source || {})) {
+    if (!item?.url) continue;
+
+    const hostname = hostnameFromItem(item);
+    const normalized = {
+      ...item,
+      hostname,
+      siteKey: item.siteKey || siteKeyFromHostname(hostname),
+      sourceName: brandFromHostname(hostname)
+    };
+    const key = libraryIdentityKey(normalized);
+    unique.set(key, choosePreferredItem(unique.get(key), normalized));
+  }
+
+  return [...unique.values()];
+}
+
 function calculateRating(risks = []) {
   const counts = risks.reduce(
     (total, risk) => {
@@ -89,7 +226,7 @@ function filteredItems() {
   const favorites = favoriteFilter.value;
   const sort = sortSelect.value;
 
-  const items = Object.values(library)
+  const items = deduplicatedLibraryItems(library)
     .map((item) => ({
       ...item,
       policyRating: normalizedRating(item)
@@ -186,7 +323,7 @@ async function toggleFavorite(item) {
   });
 
   if (response?.ok) {
-    library[canonicalUrl(item.url)] = response.item;
+    library[libraryIdentityKey(response.item)] = response.item;
     render();
   }
 }
@@ -203,7 +340,7 @@ async function removeItem(item) {
   });
 
   if (response?.ok) {
-    delete library[canonicalUrl(item.url)];
+    delete library[libraryIdentityKey(item)];
     render();
   }
 }
@@ -215,7 +352,8 @@ function createCard(item) {
   const counts = countsForRisks(item.risks);
 
   fragment.querySelector(".policy-type").textContent = policyTypeLabel(item.type);
-  fragment.querySelector(".company-name").textContent = item.sourceName || "Website";
+  fragment.querySelector(".company-name").textContent =
+    item.sourceName || brandFromHostname(hostnameFromItem(item));
   fragment.querySelector(".hostname").textContent = item.hostname || item.url;
   fragment.querySelector(".rating-value").textContent = rating;
   fragment.querySelector(".overview").textContent =

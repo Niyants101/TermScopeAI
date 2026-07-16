@@ -80,8 +80,53 @@ function canonicalPolicyUrl(value) {
   }
 }
 
+const COMMON_SECOND_LEVEL_DOMAINS = new Set([
+  "ac",
+  "co",
+  "com",
+  "edu",
+  "gov",
+  "net",
+  "org"
+]);
+
+function siteKeyFromHostname(hostname) {
+  const parts = String(hostname || "")
+    .toLowerCase()
+    .replace(/^www\./, "")
+    .split(".")
+    .filter(Boolean);
+
+  if (parts.length <= 2) return parts.join(".");
+
+  const last = parts.at(-1);
+  const secondLast = parts.at(-2);
+
+  if (
+    last.length === 2 &&
+    COMMON_SECOND_LEVEL_DOMAINS.has(secondLast) &&
+    parts.length >= 3
+  ) {
+    return parts.slice(-3).join(".");
+  }
+
+  return parts.slice(-2).join(".");
+}
+
+function policySiteKey(policy) {
+  if (policy?.siteKey) return String(policy.siteKey).toLowerCase();
+
+  try {
+    return siteKeyFromHostname(
+      policy?.hostname || new URL(policy?.url || "").hostname
+    );
+  } catch {
+    return String(policy?.hostname || "").toLowerCase();
+  }
+}
+
 function policyKey(policy) {
-  return `${policy?.type || "policy"}:${canonicalPolicyUrl(policy?.url)}`;
+  return `${policySiteKey(policy) || "website"}:${policy?.type || "policy"}`;
 }
 
 function brandFromHostname(hostname) {
@@ -97,35 +142,91 @@ function brandFromHostname(hostname) {
 }
 
 function sourceNameForPolicy(anchor, type) {
-  const label = normalize(
-    anchor.textContent ||
-      anchor.getAttribute("aria-label") ||
-      anchor.getAttribute("title")
-  );
-
-  const cleaned = label
-    .replace(POLICY_TEXT.terms, "")
-    .replace(POLICY_TEXT.privacy, "")
-    .replace(/[\s'’:|]+$/g, "")
-    .replace(/^[\s'’:|]+/g, "")
-    .replace(/['’]s$/i, "")
-    .trim();
-
-  if (cleaned && cleaned.length <= 40 && !/^(our|the|read)$/i.test(cleaned)) {
-    return cleaned.replace(/\.com$/i, "");
-  }
-
   try {
-    return brandFromHostname(new URL(anchor.href).hostname);
+    return brandFromHostname(new URL(anchor.href, location.href).hostname);
   } catch {
     return type === "terms" ? "Terms" : "Privacy";
   }
 }
 
+function normalizedPolicyLabel(value) {
+  return normalize(value)
+    .toLowerCase()
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ");
+}
+
+function isSupplementaryPolicyLabel(label) {
+  return /\b(?:preview|new terms|generative|prohibited|acceptable use|additional|supplemental|service-specific|service specific|technology|technologies|cookies?|faq|overview|updates?|definitions?|government|children|safety|community|advertising|developer|api|content policy|product-specific|product specific)\b/i.test(
+    label
+  );
+}
+
+function isPrimaryPolicyLabel(label, type) {
+  const value = normalizedPolicyLabel(label)
+    .replace(/^(?:read|view|see|open)\s+(?:our|the)?\s*/i, "")
+    .replace(/^(?:our|the)\s+/i, "")
+    .trim();
+
+  if (type === "terms") {
+    return /^(?:(?:[a-z0-9.'’ -]+)\s+)?(?:terms|terms of use|terms of service|terms and conditions|terms & conditions|conditions of use|user agreement|service agreement)$/i.test(
+      value
+    );
+  }
+
+  return /^(?:(?:[a-z0-9.'’ -]+)\s+)?(?:privacy|privacy policy|privacy notice|privacy statement|data policy)$/i.test(
+    value
+  );
+}
+
 function explicitPolicyType(label) {
-  if (POLICY_TEXT.terms.test(label)) return "terms";
-  if (POLICY_TEXT.privacy.test(label)) return "privacy";
+  const hasTerms = POLICY_TEXT.terms.test(label);
+  const hasPrivacy = POLICY_TEXT.privacy.test(label);
+
+  if (hasTerms && hasPrivacy) return null;
+  if (hasTerms) return "terms";
+  if (hasPrivacy) return "privacy";
   return null;
+}
+
+function policyCandidateScore(item) {
+  const label = normalizedPolicyLabel(item?.label);
+  let pathname = "";
+
+  try {
+    pathname = new URL(item?.url || "", location.href).pathname.toLowerCase();
+  } catch {
+    pathname = "";
+  }
+
+  let score = 0;
+
+  if (isPrimaryPolicyLabel(label, item?.type)) score += 120;
+  if (label.length > 0 && label.length <= 36) score += 15;
+  if (isVisiblePolicyAnchor(item?.anchor)) score += 8;
+
+  if (
+    item?.type === "terms" &&
+    /(?:^|\/)(?:terms|tos|terms-of-use|terms-of-service|user-agreement|conditions)(?:\/)?$/i.test(
+      pathname
+    )
+  ) {
+    score += 60;
+  }
+
+  if (
+    item?.type === "privacy" &&
+    /(?:^|\/)(?:privacy|privacy-policy|privacy-notice|privacy-statement|data-policy)(?:\/)?$/i.test(
+      pathname
+    )
+  ) {
+    score += 60;
+  }
+
+  if (isSupplementaryPolicyLabel(label)) score -= 180;
+  if (POLICY_TEXT.terms.test(label) && POLICY_TEXT.privacy.test(label)) score -= 200;
+
+  return score;
 }
 
 function classifyPolicy(anchor) {
@@ -138,6 +239,12 @@ function classifyPolicy(anchor) {
       .filter(Boolean)
       .join(" ")
   );
+
+  if (!label || isSupplementaryPolicyLabel(label)) return null;
+
+  const hasTerms = POLICY_TEXT.terms.test(label);
+  const hasPrivacy = POLICY_TEXT.privacy.test(label);
+  if (hasTerms && hasPrivacy) return null;
 
   const explicitType = explicitPolicyType(label);
   let target;
@@ -164,15 +271,26 @@ function classifyPolicy(anchor) {
 
   if (explicitType) return explicitType;
 
-  if (label.length > 120 || !/\b(?:policy|terms|agreement|conditions|privacy)\b/i.test(label)) {
+  if (
+    label.length > 120 ||
+    !/\b(?:policy|terms|agreement|conditions|privacy)\b/i.test(label)
+  ) {
     return null;
   }
 
-  if (/\/(?:terms|tos|terms-of-use|terms-of-service|user-agreement)(?:[/?#_-]|$)/i.test(target.href)) {
+  if (
+    /(?:^|\/)(?:terms|tos|terms-of-use|terms-of-service|user-agreement|conditions)(?:\/)?$/i.test(
+      target.pathname
+    )
+  ) {
     return "terms";
   }
 
-  if (/\/(?:privacy|privacy-policy|privacy-notice|data-policy)(?:[/?#_-]|$)/i.test(target.href)) {
+  if (
+    /(?:^|\/)(?:privacy|privacy-policy|privacy-notice|privacy-statement|data-policy)(?:\/)?$/i.test(
+      target.pathname
+    )
+  ) {
     return "privacy";
   }
 
@@ -199,7 +317,8 @@ function policyFromAnchor(anchor) {
       (type === "terms" ? "Terms of Use" : "Privacy Policy"),
     sourceName: sourceNameForPolicy(anchor, type),
     hostname,
-    url: anchor.href,
+    siteKey: siteKeyFromHostname(hostname),
+    url: canonicalPolicyUrl(anchor.href),
     anchor
   };
 }
@@ -221,10 +340,19 @@ function collectPolicies() {
 
   for (const item of collectPolicyAnchors()) {
     const key = policyKey(item);
-    if (!unique.has(key)) unique.set(key, item);
+    const previous = unique.get(key);
+
+    if (!previous || policyCandidateScore(item) > policyCandidateScore(previous)) {
+      unique.set(key, item);
+    }
   }
 
-  policies = [...unique.values()];
+  policies = [...unique.values()].sort((a, b) => {
+    if (a.anchor === b.anchor) return 0;
+    const position = a.anchor.compareDocumentPosition(b.anchor);
+    return position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+  });
+
   return policies;
 }
 
@@ -330,7 +458,7 @@ async function syncPolicyTriggers() {
     return;
   }
 
-  const clusters = clusterPolicyItems(collectPolicyAnchors());
+  const clusters = clusterPolicyItems(collectPolicies());
   const liveKeys = new Set();
 
   clusters.forEach((cluster, index) => {
@@ -767,11 +895,18 @@ async function readSavedRatings() {
 }
 
 function savedItemFor(library, policy) {
-  return library[canonicalPolicyUrl(policy.url)];
+  const direct = library[policyKey(policy)];
+  if (direct) return direct;
+
+  return Object.values(library).find(
+    (item) =>
+      policySiteKey(item) === policySiteKey(policy) &&
+      item?.type === policy?.type
+  );
 }
 
 function isCurrentSavedAnalysis(item) {
-  return item?.analysisVersion === "7.0" && Array.isArray(item.risks);
+  return item?.scoringVersion === "7.0" && Array.isArray(item.risks);
 }
 
 function cacheLibraryItems(library, choices) {
@@ -1143,6 +1278,7 @@ async function saveAnalysisToLibrary(policy, result) {
       label: policy.label,
       sourceName: policy.sourceName,
       hostname: policy.hostname,
+      siteKey: policy.siteKey || policySiteKey(policy),
       policyRating: normalized.policyRating,
       ratingLabel: normalized.ratingLabel,
       overview: normalized.overview,
