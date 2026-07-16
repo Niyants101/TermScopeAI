@@ -259,6 +259,79 @@ async function openNextToSender(url, sender, extra = {}) {
   return chrome.tabs.create(properties);
 }
 
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function deliverClauseRequest(tabId, requestId) {
+  let lastCompleteUrl = "";
+  let stableCompleteChecks = 0;
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    let tab;
+
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      throw new Error("The policy tab was closed before TermScopeAI could open the clause.");
+    }
+
+    if (tab.status === "complete" && tab.url) {
+      if (tab.url === lastCompleteUrl) {
+        stableCompleteChecks += 1;
+      } else {
+        lastCompleteUrl = tab.url;
+        stableCompleteChecks = 1;
+      }
+
+      try {
+        const response = await chrome.tabs.sendMessage(tabId, {
+          type: "TERMSCOPE_LOAD_CLAUSE",
+          requestId
+        });
+
+        if (response?.ok && stableCompleteChecks >= 2) {
+          await delay(700);
+          const finalTab = await chrome.tabs.get(tabId);
+
+          if (finalTab.status === "complete" && finalTab.url === lastCompleteUrl) {
+            await chrome.tabs
+              .sendMessage(tabId, {
+                type: "TERMSCOPE_LOAD_CLAUSE",
+                requestId
+              })
+              .catch(() => {});
+            return true;
+          }
+        }
+      } catch {
+        // The content script may not be ready yet, so keep trying.
+      }
+    } else {
+      stableCompleteChecks = 0;
+    }
+
+    await delay(attempt < 8 ? 250 : 500);
+  }
+
+  throw new Error("The policy opened, but the guided clause panel could not start.");
+}
+
+async function cleanupOldClauseRequests() {
+  const stored = await chrome.storage.local.get(null);
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  const expired = Object.entries(stored)
+    .filter(
+      ([key, value]) =>
+        key.startsWith("highlight:") &&
+        Number(value?.createdAt || 0) > 0 &&
+        Number(value.createdAt) < cutoff
+    )
+    .map(([key]) => key);
+
+  if (expired.length) await chrome.storage.local.remove(expired);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "TERMSCOPE_FETCH_POLICY") {
     fetchPolicy(message.url)
@@ -285,8 +358,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const requestId = crypto.randomUUID();
     const storageKey = `highlight:${requestId}`;
     const clauses = Array.isArray(message.clauses)
-      ? message.clauses
-      : message.clause
+      ? message.clauses.filter((clause) => clause?.quote)
+      : message.clause?.quote
         ? [message.clause]
         : [];
     const activeIndex = Math.max(
@@ -296,20 +369,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const activeClause = clauses[activeIndex] || message.clause || {};
     const sourceUrl = activeClause.sourceUrl || message.url;
 
-    chrome.storage.local
-      .set({
-        [storageKey]: {
-          clauses,
-          activeIndex,
-          policyRating: message.policyRating,
-          ratingLabel: message.ratingLabel,
-          policySourceName: message.policySourceName,
-          policyType: message.policyType,
-          url: sourceUrl,
-          createdAt: Date.now()
+    Promise.resolve()
+      .then(cleanupOldClauseRequests)
+      .then(() => {
+        if (!clauses.length) {
+          throw new Error("No reviewed clause was available to open.");
         }
+        if (!sourceUrl) {
+          throw new Error("The policy URL for this clause is missing.");
+        }
+
+        return chrome.storage.local.set({
+          [storageKey]: {
+            clauses,
+            activeIndex,
+            policyRating: message.policyRating,
+            ratingLabel: message.ratingLabel,
+            policySourceName: message.policySourceName,
+            policyType: message.policyType,
+            url: sourceUrl,
+            createdAt: Date.now()
+          }
+        });
       })
       .then(() => openNextToSender(buildHighlightUrl(sourceUrl, requestId), sender))
+      .then(async (tab) => {
+        if (tab.id === undefined) {
+          throw new Error("TermScopeAI could not identify the new policy tab.");
+        }
+        await deliverClauseRequest(tab.id, requestId);
+        return tab;
+      })
       .then(() => sendResponse({ ok: true }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

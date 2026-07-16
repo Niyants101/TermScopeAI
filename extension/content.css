@@ -36,7 +36,7 @@
   right: 18px !important;
   bottom: 18px !important;
   width: min(390px, calc(100vw - 24px)) !important;
-  max-height: min(720px, calc(100vh - 24px)) !important;
+  max-height: min(720px, var(--termscope-available-height, calc(100vh - 36px))) !important;
   z-index: 2147483647 !important;
   color: #171326 !important;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
@@ -55,6 +55,7 @@
 }
 
 .termscope-shell {
+  max-height: min(720px, var(--termscope-available-height, calc(100vh - 36px))) !important;
   overflow: hidden !important;
   border: 1px solid rgba(99, 82, 225, 0.16) !important;
   border-radius: 22px !important;
@@ -151,7 +152,7 @@
 }
 
 .termscope-body {
-  max-height: calc(min(720px, 100vh - 24px) - 68px) !important;
+  max-height: calc(min(720px, var(--termscope-available-height, calc(100vh - 36px))) - 68px) !important;
   overflow-x: hidden !important;
   overflow-y: auto !important;
   padding: 16px !important;
@@ -1094,20 +1095,20 @@ mark.termscope-highlight {
 }
 
 #termscope-widget-host.termscope-clause-mode:not(.termscope-user-positioned) {
-  top: 16px !important;
+  top: auto !important;
   right: 16px !important;
   bottom: 16px !important;
   left: auto !important;
   width: min(410px, calc(100vw - 24px)) !important;
-  max-height: calc(100vh - 32px) !important;
+  max-height: min(760px, var(--termscope-available-height, calc(100vh - 32px))) !important;
 }
 
 #termscope-widget-host.termscope-clause-mode .termscope-shell {
-  max-height: calc(100vh - 32px) !important;
+  max-height: min(760px, var(--termscope-available-height, calc(100vh - 32px))) !important;
 }
 
 #termscope-widget-host.termscope-clause-mode .termscope-body {
-  max-height: calc(100vh - 100px) !important;
+  max-height: calc(min(760px, var(--termscope-available-height, calc(100vh - 32px))) - 68px) !important;
 }
 
 #termscope-widget-host.termscope-clause-mode .termscope-header {
@@ -1235,11 +1236,11 @@ mark.termscope-highlight.termscope-highlight-fading {
 
 @media (max-width: 520px) {
   #termscope-widget-host.termscope-clause-mode:not(.termscope-user-positioned) {
-    top: 8px !important;
+    top: auto !important;
     right: 8px !important;
     bottom: 8px !important;
     width: calc(100vw - 16px) !important;
-    max-height: calc(100vh - 16px) !important;
+    max-height: var(--termscope-available-height, calc(100vh - 16px)) !important;
   }
 }
 
@@ -1347,4 +1348,83 @@ mark.termscope-highlight.termscope-highlight-fading {
 .termscope-risk.high .termscope-risk-explanation.termscope-action strong,
 .termscope-risk.high .termscope-risk-explanation.termscope-action p {
   color: #9f3932 !important;
+}
+
+
+/* TermScopeAI Version 8 viewport and clause layout fixes */
+
+#termscope-widget-host .termscope-clause-head {
+  position: static !important;
+  display: block !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 0 0 12px !important;
+  padding: 0 !important;
+  inset: auto !important;
+  transform: none !important;
+  overflow: visible !important;
+  float: none !important;
+  clear: both !important;
+}
+
+#termscope-widget-host .termscope-clause-head > * {
+  position: static !important;
+  float: none !important;
+  clear: none !important;
+  translate: none !important;
+}
+
+#termscope-widget-host .termscope-clause-head .termscope-severity {
+  display: inline-flex !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 27px !important;
+  margin: 0 !important;
+  padding: 6px 10px !important;
+  vertical-align: top !important;
+}
+
+#termscope-widget-host .termscope-clause-head h2 {
+  display: block !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 9px 0 0 !important;
+  padding: 0 !important;
+  color: #171326 !important;
+  font-size: 18px !important;
+  font-weight: 850 !important;
+  line-height: 1.28 !important;
+  letter-spacing: normal !important;
+  text-indent: 0 !important;
+}
+
+#termscope-widget-host .termscope-clause-head p {
+  display: block !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  margin: 7px 0 0 !important;
+  padding: 0 !important;
+  color: #716c7e !important;
+  font-size: 11.5px !important;
+  line-height: 1.6 !important;
+  letter-spacing: normal !important;
+  text-indent: 0 !important;
+}
+
+#termscope-widget-host.termscope-user-positioned {
+  max-height: min(760px, var(--termscope-available-height, calc(100vh - 36px))) !important;
+}
+
+#termscope-widget-host.termscope-user-positioned .termscope-shell {
+  max-height: min(760px, var(--termscope-available-height, calc(100vh - 36px))) !important;
+}
+
+#termscope-widget-host.termscope-user-positioned .termscope-body {
+  max-height: calc(min(760px, var(--termscope-available-height, calc(100vh - 36px))) - 68px) !important;
 }

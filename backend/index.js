@@ -1,5 +1,5 @@
 const MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
-const VERSION = "7.0.0";
+const VERSION = "8.0.0";
 const SCORING_VERSION = "7.0";
 const MAX_DOCUMENTS = 1;
 const MAX_CHARS_PER_DOCUMENT = 20000;
@@ -332,7 +332,7 @@ function verifyFindings(output, documents) {
     policyRating,
     ratingLabel: ratingLabel(policyRating),
     scoringVersion: SCORING_VERSION,
-    analysisVersion: "7.0",
+    analysisVersion: "8.0",
     risks: verified
   };
 }

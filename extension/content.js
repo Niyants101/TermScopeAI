@@ -27,6 +27,10 @@ let currentClauseRequest = null;
 let triggerSyncTimer = null;
 let pickerSession = 0;
 let clauseNavigator = null;
+let activeClauseRequestId = "";
+let clauseLoadPromise = null;
+let userPositionedThisPage = false;
+let viewportFitFrame = null;
 
 const analysisCache = new Map();
 const analysisJobs = new Map();
@@ -458,17 +462,20 @@ function createWidget() {
     });
 
   enableDragging();
-  requestAnimationFrame(applySavedPosition);
+  addEventListener("resize", scheduleFitWidgetToViewport);
+  resetWidgetToBottomRight();
 }
 
 function setClauseMode(enabled) {
   createWidget();
   host.classList.toggle("termscope-clause-mode", Boolean(enabled));
+  scheduleFitWidgetToViewport();
 }
 
 function showWidget() {
   createWidget();
   host.classList.remove("termscope-hidden");
+  scheduleFitWidgetToViewport();
 }
 
 function closeWidget() {
@@ -480,24 +487,56 @@ function setBody(html) {
   const body = host.querySelector("#termscope-body");
   body.innerHTML = html;
   body.scrollTop = 0;
+  scheduleFitWidgetToViewport();
 }
 
-function applySavedPosition() {
-  if (!host || !settings.widgetPosition) return;
+function resetWidgetToBottomRight() {
+  if (!host) return;
 
-  const { left, top } = settings.widgetPosition;
-  if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+  userPositionedThisPage = false;
+  host.classList.remove("termscope-user-positioned");
+  host.style.setProperty("left", "auto", "important");
+  host.style.setProperty("top", "auto", "important");
+  host.style.setProperty("right", `${innerWidth <= 520 ? 8 : 18}px`, "important");
+  host.style.setProperty("bottom", `${innerWidth <= 520 ? 8 : 18}px`, "important");
+  scheduleFitWidgetToViewport();
+}
 
-  const width = host.offsetWidth || 390;
-  const height = host.offsetHeight || 160;
-  const nextLeft = Math.max(4, Math.min(left, innerWidth - width - 4));
-  const nextTop = Math.max(4, Math.min(top, innerHeight - height - 4));
+function fitWidgetToViewport() {
+  viewportFitFrame = null;
+  if (!host || host.classList.contains("termscope-hidden")) return;
+
+  const margin = innerWidth <= 520 ? 8 : 18;
+  const availableHeight = Math.max(180, innerHeight - margin * 2);
+  host.style.setProperty("--termscope-available-height", `${availableHeight}px`);
+
+  if (!userPositionedThisPage) {
+    host.classList.remove("termscope-user-positioned");
+    host.style.setProperty("left", "auto", "important");
+    host.style.setProperty("top", "auto", "important");
+    host.style.setProperty("right", `${margin}px`, "important");
+    host.style.setProperty("bottom", `${margin}px`, "important");
+    return;
+  }
+
+  const rect = host.getBoundingClientRect();
+  const width = Math.min(rect.width || 390, Math.max(120, innerWidth - margin * 2));
+  const height = Math.min(rect.height || 160, availableHeight);
+  const left = Math.max(margin, Math.min(rect.left, innerWidth - width - margin));
+  const top = Math.max(margin, Math.min(rect.top, innerHeight - height - margin));
 
   host.classList.add("termscope-user-positioned");
-  host.style.setProperty("left", `${nextLeft}px`, "important");
-  host.style.setProperty("top", `${nextTop}px`, "important");
+  host.style.setProperty("left", `${left}px`, "important");
+  host.style.setProperty("top", `${top}px`, "important");
   host.style.setProperty("right", "auto", "important");
   host.style.setProperty("bottom", "auto", "important");
+}
+
+function scheduleFitWidgetToViewport() {
+  if (viewportFitFrame !== null) cancelAnimationFrame(viewportFitFrame);
+  viewportFitFrame = requestAnimationFrame(() => {
+    viewportFitFrame = requestAnimationFrame(fitWidgetToViewport);
+  });
 }
 
 function enableDragging() {
@@ -508,6 +547,8 @@ function enableDragging() {
     if (event.target.closest("button")) return;
 
     const rect = host.getBoundingClientRect();
+    userPositionedThisPage = true;
+    host.classList.add("termscope-user-positioned");
     drag = {
       x: event.clientX - rect.left,
       y: event.clientY - rect.top
@@ -536,19 +577,12 @@ function enableDragging() {
     host.style.setProperty("bottom", "auto", "important");
   });
 
-  handle.addEventListener("pointerup", async (event) => {
+  handle.addEventListener("pointerup", (event) => {
     if (!drag) return;
 
     drag = null;
     handle.releasePointerCapture(event.pointerId);
-
-    const rect = host.getBoundingClientRect();
-    settings.widgetPosition = {
-      left: rect.left,
-      top: rect.top
-    };
-
-    await chrome.storage.sync.set({ settings });
+    fitWidgetToViewport();
   });
 }
 
@@ -563,6 +597,7 @@ function destroyClauseNavigator() {
 
 function openWidget() {
   destroyClauseNavigator();
+  resetWidgetToBottomRight();
   setClauseMode(false);
   showWidget();
   renderPolicyPicker();
@@ -1921,47 +1956,70 @@ async function findClauseMatches(clauses) {
   return matches;
 }
 
+async function loadClauseRequest(requestId) {
+  if (!requestId) return false;
+  if (activeClauseRequestId === requestId && clauseNavigator) return true;
+  if (activeClauseRequestId === requestId && clauseLoadPromise) {
+    return clauseLoadPromise;
+  }
+
+  activeClauseRequestId = requestId;
+  clauseLoadPromise = (async () => {
+    const key = `highlight:${requestId}`;
+    const stored = await chrome.storage.local.get(key);
+    const request = stored[key];
+
+    const clauses = Array.isArray(request?.clauses)
+      ? request.clauses.filter((clause) => clause?.quote)
+      : request?.quote
+        ? [request]
+        : [];
+
+    if (!clauses.length) {
+      activeClauseRequestId = "";
+      return false;
+    }
+
+    resetWidgetToBottomRight();
+    showWidget();
+    setClauseMode(true);
+    currentClauseRequest = clauses[0];
+    renderClauseDetail(clauses[0], false, 0, clauses.length);
+
+    const matches = await findClauseMatches(clauses);
+    const activeIndex = Math.max(
+      0,
+      Math.min(Number(request.activeIndex) || 0, clauses.length - 1)
+    );
+
+    clauseNavigator = {
+      clauses,
+      matches,
+      activeIndex,
+      ignoreScrollUntil: 0,
+      scrollHandler: null
+    };
+
+    activateClauseIndex(activeIndex, { scroll: true });
+    setupClauseScrollTracking();
+    scheduleFitWidgetToViewport();
+    return true;
+  })();
+
+  try {
+    return await clauseLoadPromise;
+  } finally {
+    if (activeClauseRequestId === requestId) clauseLoadPromise = null;
+  }
+}
+
 async function highlightRequestedClause() {
   const match = location.hash.match(/(?:^|[&#])termscope=([a-f0-9-]+)/i);
   if (!match) return;
-
-  const key = `highlight:${match[1]}`;
-  const stored = await chrome.storage.local.get(key);
-  const request = stored[key];
-
-  const clauses = Array.isArray(request?.clauses)
-    ? request.clauses.filter((clause) => clause?.quote)
-    : request?.quote
-      ? [request]
-      : [];
-
-  if (!clauses.length) return;
-
-  showWidget();
-  setClauseMode(true);
-  currentClauseRequest = clauses[0];
-  renderClauseDetail(clauses[0], false, 0, clauses.length);
-
-  const matches = await findClauseMatches(clauses);
-  const activeIndex = Math.max(
-    0,
-    Math.min(Number(request.activeIndex) || 0, clauses.length - 1)
-  );
-
-  clauseNavigator = {
-    clauses,
-    matches,
-    activeIndex,
-    ignoreScrollUntil: 0,
-    scrollHandler: null
-  };
-
-  activateClauseIndex(activeIndex, { scroll: true });
-  setupClauseScrollTracking();
-  await chrome.storage.local.remove(key);
+  await loadClauseRequest(match[1]);
 }
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "TERMSCOPE_TOGGLE") {
     createWidget();
 
@@ -1970,6 +2028,14 @@ chrome.runtime.onMessage.addListener((message) => {
     } else {
       closeWidget();
     }
+    return;
+  }
+
+  if (message.type === "TERMSCOPE_LOAD_CLAUSE") {
+    loadClauseRequest(message.requestId)
+      .then((loaded) => sendResponse({ ok: loaded }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
   }
 });
 
