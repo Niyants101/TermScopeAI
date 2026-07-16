@@ -928,14 +928,13 @@ mark.termscope-highlight {
   }
 }
 
-/* TermScopeAI Version 6 refinements */
+/* TermScopeAI Version 7 refinements */
 
 .termscope-policy-trigger {
-  width: auto !important;
+  width: 27px !important;
   min-width: 27px !important;
   height: 27px !important;
-  gap: 4px !important;
-  padding: 0 5px !important;
+  padding: 0 !important;
   border-color: rgba(115, 92, 238, 0.32) !important;
   background: rgba(255, 255, 255, 0.96) !important;
   box-shadow: 0 4px 14px rgba(82, 67, 190, 0.2) !important;
@@ -945,32 +944,6 @@ mark.termscope-highlight {
   width: 15px !important;
   height: 15px !important;
   flex: 0 0 15px !important;
-}
-
-.termscope-trigger-score {
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  min-width: 22px !important;
-  height: 18px !important;
-  padding: 0 4px !important;
-  border-radius: 999px !important;
-  font: 850 9px/1 Inter, ui-sans-serif, system-ui, sans-serif !important;
-}
-
-.termscope-trigger-score.good {
-  background: #e3f6e9 !important;
-  color: #16753d !important;
-}
-
-.termscope-trigger-score.mixed {
-  background: #fff0ca !important;
-  color: #8a5d00 !important;
-}
-
-.termscope-trigger-score.poor {
-  background: #ffe3e0 !important;
-  color: #b52f27 !important;
 }
 
 .termscope-icon-btn svg {
@@ -1120,7 +1093,7 @@ mark.termscope-highlight {
   font-size: 9px !important;
 }
 
-#termscope-widget-host.termscope-clause-mode {
+#termscope-widget-host.termscope-clause-mode:not(.termscope-user-positioned) {
   top: 16px !important;
   right: 16px !important;
   bottom: 16px !important;
@@ -1138,7 +1111,11 @@ mark.termscope-highlight {
 }
 
 #termscope-widget-host.termscope-clause-mode .termscope-header {
-  cursor: default !important;
+  cursor: grab !important;
+}
+
+#termscope-widget-host.termscope-clause-mode .termscope-header:active {
+  cursor: grabbing !important;
 }
 
 .termscope-clause-progress {
@@ -1257,11 +1234,117 @@ mark.termscope-highlight.termscope-highlight-fading {
 }
 
 @media (max-width: 520px) {
-  #termscope-widget-host.termscope-clause-mode {
+  #termscope-widget-host.termscope-clause-mode:not(.termscope-user-positioned) {
     top: 8px !important;
     right: 8px !important;
     bottom: 8px !important;
     width: calc(100vw - 16px) !important;
     max-height: calc(100vh - 16px) !important;
   }
+}
+
+
+/* Version 7 clause panel clarity */
+
+.termscope-clause-head .termscope-severity {
+  min-height: 27px !important;
+  padding: 6px 10px !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.055em !important;
+  box-shadow: 0 3px 10px rgba(34, 25, 79, 0.08) !important;
+}
+
+#termscope-widget-host .termscope-clause-head,
+#termscope-widget-host .termscope-clause-head h2,
+#termscope-widget-host .termscope-clause-head p,
+#termscope-widget-host .termscope-detail-card,
+#termscope-widget-host .termscope-detail-card h3,
+#termscope-widget-host .termscope-detail-card p {
+  position: static !important;
+  display: block !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  inset: auto !important;
+  transform: none !important;
+  align-self: auto !important;
+}
+
+#termscope-widget-host .termscope-detail-card {
+  padding: 13px 14px !important;
+}
+
+#termscope-widget-host .termscope-detail-card h3 {
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 11.5px !important;
+  line-height: 1.35 !important;
+}
+
+#termscope-widget-host .termscope-detail-card p {
+  margin: 7px 0 0 !important;
+  padding: 0 !important;
+  font-size: 11.5px !important;
+  line-height: 1.65 !important;
+}
+
+.termscope-action-card.high {
+  border-color: #efc0bc !important;
+  background: #fff4f2 !important;
+}
+
+.termscope-action-card.high h3,
+.termscope-action-card.high p {
+  color: #9f3932 !important;
+}
+
+.termscope-action-card.medium {
+  border-color: #ead7a3 !important;
+  background: #fff9e9 !important;
+}
+
+.termscope-action-card.medium h3,
+.termscope-action-card.medium p {
+  color: #7a5907 !important;
+}
+
+.termscope-action-card.low {
+  border-color: #c9def5 !important;
+  background: #f1f7ff !important;
+}
+
+.termscope-action-card.low h3,
+.termscope-action-card.low p {
+  color: #2b6396 !important;
+}
+
+.termscope-risk.low .termscope-risk-explanation.termscope-action {
+  border-color: #c9def5 !important;
+  background: #f1f7ff !important;
+}
+
+.termscope-risk.low .termscope-risk-explanation.termscope-action strong,
+.termscope-risk.low .termscope-risk-explanation.termscope-action p {
+  color: #2b6396 !important;
+}
+
+.termscope-risk.medium .termscope-risk-explanation.termscope-action {
+  border-color: #ead7a3 !important;
+  background: #fff9e9 !important;
+}
+
+.termscope-risk.medium .termscope-risk-explanation.termscope-action strong,
+.termscope-risk.medium .termscope-risk-explanation.termscope-action p {
+  color: #7a5907 !important;
+}
+
+.termscope-risk.high .termscope-risk-explanation.termscope-action {
+  border-color: #efc0bc !important;
+  background: #fff4f2 !important;
+}
+
+.termscope-risk.high .termscope-risk-explanation.termscope-action strong,
+.termscope-risk.high .termscope-risk-explanation.termscope-action p {
+  color: #9f3932 !important;
 }

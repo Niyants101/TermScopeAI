@@ -1,8 +1,8 @@
 const MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
-const VERSION = "6.0.0";
-const SCORING_VERSION = "6.0";
+const VERSION = "7.0.0";
+const SCORING_VERSION = "7.0";
 const MAX_DOCUMENTS = 1;
-const MAX_CHARS_PER_DOCUMENT = 18000;
+const MAX_CHARS_PER_DOCUMENT = 20000;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -190,6 +190,68 @@ function calibrateSeverity(risk, quote) {
   return "low";
 }
 
+function fallbackActionForRisk(risk, quote) {
+  const text = cleanText([
+    risk.title,
+    risk.shortSummary,
+    risk.plainMeaning,
+    risk.whyItMatters,
+    quote
+  ].join(" ")).toLowerCase();
+
+  if (/biometric|facial recognition|voiceprint|fingerprint/.test(text)) {
+    return "Avoid enabling biometric features unless they are necessary. Use another sign in method when available, and delete stored biometric data through the account or privacy settings if the service allows it.";
+  }
+
+  if (/precise location|geolocation|location data/.test(text)) {
+    return "Turn off precise location access unless the feature truly needs it. Choose approximate location or a one time browser permission when those options are available.";
+  }
+
+  if (/targeted advert|personalized advert|tracking|cookie|analytics/.test(text)) {
+    return "Review the privacy and cookie controls, turn off personalized advertising where available, and limit optional tracking permissions in your browser or device settings.";
+  }
+
+  if (/sell|sale of personal|share|third part|disclos/.test(text)) {
+    return "Use the service's privacy controls to limit sharing where available, opt out of targeted advertising or data sales, and avoid providing optional personal information.";
+  }
+
+  if (/retain|retention|delete|deletion/.test(text)) {
+    return "Check the account and privacy settings for deletion controls, download anything you need first, and contact support if the policy does not clearly explain when retained data is removed.";
+  }
+
+  if (/arbitration|class action|jury trial|dispute/.test(text)) {
+    return "Read the dispute section before accepting, look for any opt out deadline, and save a copy of the terms if you decide to opt out.";
+  }
+
+  if (/automatic renewal|auto.?renew|subscription|refund|nonrefundable|charge/.test(text)) {
+    return "Check the renewal date, cancellation steps, and refund rules before paying. Set a reminder before the next charge so you have time to cancel.";
+  }
+
+  if (/license|ownership|content|intellectual property|sublicens/.test(text)) {
+    return "Only upload content you are comfortable licensing under these terms, remove sensitive files, and keep your own backup of anything important.";
+  }
+
+  if (/artificial intelligence|machine learning|train.*(?:model|ai)/.test(text)) {
+    return "Avoid submitting sensitive or proprietary content, check for an AI training opt out, and remove earlier uploads when the service provides that control.";
+  }
+
+  if (/terminate|termination|suspend|suspension|account access/.test(text)) {
+    return "Keep backups of important content, follow the account rules, and do not rely on this service as the only place where your files or records are stored.";
+  }
+
+  return "Review this clause before accepting, check whether the service provides an opt out or related setting, and avoid providing optional information until you are comfortable with the tradeoff.";
+}
+
+function normalizeAction(risk, quote) {
+  const action = cleanText(risk.action);
+  const invalid =
+    action.length < 18 ||
+    /^(?:high|medium|low|none|n\/?a|not applicable|unknown)$/i.test(action) ||
+    /^(?:severity|risk level)\s*:?\s*(?:high|medium|low)$/i.test(action);
+
+  return invalid ? fallbackActionForRisk(risk, quote) : action.slice(0, 520);
+}
+
 function calculateRating(risks = []) {
   const counts = risks.reduce(
     (total, risk) => {
@@ -242,9 +304,9 @@ function verifyFindings(output, documents) {
         title: cleanText(risk.title).slice(0, 120) || "Potential concern",
         severity: calibrateSeverity(risk, quote),
         shortSummary: cleanText(risk.shortSummary).slice(0, 260),
-        plainMeaning: cleanText(risk.plainMeaning).slice(0, 700),
-        whyItMatters: cleanText(risk.whyItMatters).slice(0, 600),
-        action: cleanText(risk.action).slice(0, 380),
+        plainMeaning: cleanText(risk.plainMeaning).slice(0, 950),
+        whyItMatters: cleanText(risk.whyItMatters).slice(0, 850),
+        action: normalizeAction(risk, quote),
         quote,
         sourceUrl: source.url,
         policyType: source.type,
@@ -270,6 +332,7 @@ function verifyFindings(output, documents) {
     policyRating,
     ratingLabel: ratingLabel(policyRating),
     scoringVersion: SCORING_VERSION,
+    analysisVersion: "7.0",
     risks: verified
   };
 }
@@ -371,7 +434,7 @@ export default {
       if (cached) return cached;
 
       const document = documents[0];
-      const systemPrompt = `You explain one website Terms of Use or Privacy Policy to an ordinary person. Identify only material restrictions, risks, or tradeoffs. Do not treat an effective date, a welcome message, a request to read the policy, a table of contents, or a normal description of the policy as a risk. Do not provide legal advice. Do not invent anything. Every finding must use an exact quote copied from the supplied document and the exact source URL. Focus on data selling or sharing, sensitive data, tracking, location, biometrics, AI training, broad content licenses, automatic renewal, refunds, forced arbitration, class action waivers, account deletion, data retention, suspension, termination, and unilateral policy changes. Use high only when the practical consequence could seriously affect privacy, money, ownership, access, or legal rights. Use medium for meaningful tradeoffs. Use low for limited concerns. Return no more than 6 findings from most serious to least serious. shortSummary must be one clear sentence. plainMeaning must explain the clause in simple language. whyItMatters must explain the practical consequence. action must give one realistic step the user can take.`;
+      const systemPrompt = `You explain one website Terms of Use or Privacy Policy to an ordinary person. Identify only material restrictions, risks, or tradeoffs. Do not treat an effective date, a welcome message, a request to read the policy, a table of contents, or a normal description of the policy as a risk. Do not provide legal advice. Do not invent anything. Every finding must use an exact quote copied from the supplied document and the exact source URL. Focus on data selling or sharing, sensitive data, tracking, location, biometrics, AI training, broad content licenses, automatic renewal, refunds, forced arbitration, class action waivers, account deletion, data retention, suspension, termination, and unilateral policy changes. Use high only when the practical consequence could seriously affect privacy, money, ownership, access, or legal rights. Use medium for meaningful tradeoffs. Use low for limited concerns. Return no more than 6 findings from most serious to least serious. shortSummary must be one clear sentence that states the main issue. plainMeaning must use 2 or 3 concise sentences explaining who may do what, when it applies, and how broad the clause is. whyItMatters must use about 2 concise sentences explaining the realistic effect on the user and the most important possible consequence. action must use 1 or 2 concrete sentences with a practical step the user can take. Never put only a severity word such as High, Medium, or Low in action.`;
 
       const response = await env.AI.run(MODEL, {
         messages: [
@@ -394,7 +457,7 @@ ${document.text}`
           }
         ],
         temperature: 0.05,
-        max_tokens: 1700,
+        max_tokens: 2300,
         response_format: {
           type: "json_schema",
           json_schema: RESPONSE_SCHEMA

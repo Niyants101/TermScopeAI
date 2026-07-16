@@ -8,7 +8,7 @@ const DEFAULT_SETTINGS = {
 
 const LIBRARY_KEY = "policyLibrary";
 const MAX_LIBRARY_ITEMS = 200;
-const SCORING_VERSION = "6.0";
+const SCORING_VERSION = "7.0";
 
 chrome.runtime.onInstalled.addListener(async () => {
   const stored = await chrome.storage.sync.get("settings");
@@ -155,7 +155,8 @@ function normalizeLibraryItem(item = {}) {
     ...item,
     policyRating,
     ratingLabel: ratingLabel(policyRating),
-    scoringVersion: SCORING_VERSION
+    scoringVersion: SCORING_VERSION,
+    analysisVersion: item.analysisVersion || "legacy"
   };
 }
 

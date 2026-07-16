@@ -15,9 +15,6 @@ const DEFAULT_SETTINGS = {
 
 const MAX_PREVIEW_POLICIES = 8;
 const PREVIEW_CONCURRENCY = 2;
-const HIGHLIGHT_VISIBLE_MS = 8000;
-const HIGHLIGHT_FADE_MS = 1200;
-
 let settings = { ...DEFAULT_SETTINGS };
 let policies = [];
 let host = null;
@@ -29,8 +26,6 @@ let settingsReturnView = "picker";
 let currentClauseRequest = null;
 let triggerSyncTimer = null;
 let pickerSession = 0;
-let highlightTimer = null;
-let highlightFadeTimer = null;
 let clauseNavigator = null;
 
 const analysisCache = new Map();
@@ -38,7 +33,7 @@ const analysisJobs = new Map();
 
 const shieldSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2.8 19 5.9v5.2c0 4.8-2.8 8.4-7 10.1-4.2-1.7-7-5.3-7-10.1V5.9l7-3.1Z" stroke="currentColor" stroke-width="1.9"/><path d="m8.8 12 2 2 4.5-5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-const gearSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.42 1.42-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V20h-2v-.08A1.7 1.7 0 0 0 12.35 18a1.7 1.7 0 0 0-1.88.34l-.06.06L9 16.98l.06-.06A1.7 1.7 0 0 0 9.4 15a1.7 1.7 0 0 0-1.56-1.03H7.76v-2h.08A1.7 1.7 0 0 0 9.4 10.94a1.7 1.7 0 0 0-.34-1.88L9 9l1.42-1.42.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 13.4 6.42V6h2v.42a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 9l-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.03h.08v2h-.08A1.7 1.7 0 0 0 19.4 15Z" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const gearSvg = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.4 7.4 0 0 0-1.69-.98l-.38-2.65A.49.49 0 0 0 14 2h-4a.49.49 0 0 0-.49.42l-.38 2.65c-.61.25-1.17.58-1.69.98l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.08.66-.08.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46a.5.5 0 0 0 .6.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65A.49.49 0 0 0 10 22h4a.49.49 0 0 0 .49-.42l.38-2.65c.61-.25 1.17-.58 1.69-.98l2.49 1a.5.5 0 0 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/></svg>`;
 
 const closeSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
 
@@ -235,28 +230,94 @@ function removeAllPolicyTriggers() {
     .forEach((button) => button.remove());
 }
 
-function selectTriggerAnchor(items) {
-  if (!items.length) return null;
+function isVisiblePolicyAnchor(anchor) {
+  if (!anchor?.isConnected) return false;
 
-  const parentGroups = new Map();
+  const style = getComputedStyle(anchor);
+  const rect = anchor.getBoundingClientRect();
 
-  for (const item of items) {
-    const parent = item.anchor.parentElement;
-    if (!parent) continue;
+  return (
+    style.display !== "none" &&
+    style.visibility !== "hidden" &&
+    Number(rect.width) > 0 &&
+    Number(rect.height) > 0
+  );
+}
 
-    if (!parentGroups.has(parent)) parentGroups.set(parent, []);
-    parentGroups.get(parent).push(item);
+function compactPolicyContainerFor(item, allItems) {
+  let node = item.anchor.parentElement;
+  let fallback = null;
+
+  for (
+    let depth = 0;
+    node && node !== document.body && node !== document.documentElement && depth < 7;
+    depth += 1, node = node.parentElement
+  ) {
+    const members = allItems.filter((candidate) => node.contains(candidate.anchor));
+    if (members.length < 2) continue;
+
+    if (!fallback) fallback = { container: node, members };
+
+    const rect = node.getBoundingClientRect();
+    const text = normalize(node.innerText || node.textContent);
+    const types = new Set(members.map((member) => member.type));
+    const compact =
+      members.length <= 4 &&
+      text.length <= 1000 &&
+      rect.height <= 320;
+
+    if (compact && (types.size >= 2 || members.length === 2)) {
+      return { container: node, members };
+    }
   }
 
-  const bestGroup = [...parentGroups.values()]
-    .sort((a, b) => {
-      const aTypes = new Set(a.map((item) => item.type)).size;
-      const bTypes = new Set(b.map((item) => item.type)).size;
-      return bTypes - aTypes || b.length - a.length;
-    })[0];
+  return fallback?.members?.length === 2 ? fallback : null;
+}
 
-  if (bestGroup?.length >= 2) return bestGroup[bestGroup.length - 1].anchor;
-  return items[items.length - 1].anchor;
+function clusterPolicyItems(items) {
+  const visible = items.filter((item) => isVisiblePolicyAnchor(item.anchor));
+  const remaining = new Set(visible);
+  const clusters = [];
+
+  for (const item of visible) {
+    if (!remaining.has(item)) continue;
+
+    const candidate = compactPolicyContainerFor(item, visible);
+    let members = candidate
+      ? candidate.members.filter((member) => remaining.has(member))
+      : [item];
+
+    const types = new Set(members.map((member) => member.type));
+    if (members.length > 4 || (members.length > 2 && types.size < 2)) {
+      members = [item];
+    }
+
+    members.forEach((member) => remaining.delete(member));
+    clusters.push(members);
+  }
+
+  const paired = clusters.filter((cluster) => cluster.length >= 2);
+  if (paired.length) return paired;
+  return visible.length ? [visible] : [];
+}
+
+function selectTriggerAnchor(items) {
+  return [...items]
+    .sort((a, b) => {
+      if (a.anchor === b.anchor) return 0;
+      const position = a.anchor.compareDocumentPosition(b.anchor);
+      return position & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    })
+    .at(-1)?.anchor;
+}
+
+function triggerClusterKey(items, index) {
+  const value = items
+    .map((item) => `${item.type}:${canonicalPolicyUrl(item.url)}`)
+    .sort()
+    .join("|");
+
+  return `${value || "cluster"}::${index}`;
 }
 
 async function syncPolicyTriggers() {
@@ -265,45 +326,46 @@ async function syncPolicyTriggers() {
     return;
   }
 
-  const items = collectPolicies();
-  const anchor = selectTriggerAnchor(items);
+  const clusters = clusterPolicyItems(collectPolicyAnchors());
+  const liveKeys = new Set();
 
-  if (!anchor) {
-    removeAllPolicyTriggers();
-    return;
-  }
+  clusters.forEach((cluster, index) => {
+    const anchor = selectTriggerAnchor(cluster);
+    if (!anchor) return;
 
-  let button = document.querySelector("#termscope-page-trigger");
+    const key = triggerClusterKey(cluster, index);
+    liveKeys.add(key);
 
-  if (!button) {
-    button = document.createElement("button");
-    button.id = "termscope-page-trigger";
-    button.className = "termscope-policy-trigger";
-    button.type = "button";
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      openWidget();
-    });
-  }
+    let button = [...document.querySelectorAll(".termscope-policy-trigger")].find(
+      (candidate) => candidate.dataset.termscopeCluster === key
+    );
 
-  const library = await readSavedRatings().catch(() => ({}));
-  const ratings = items
-    .map((item) => library[canonicalPolicyUrl(item.url)]?.policyRating)
-    .filter(Number.isFinite);
-  const lowest = ratings.length ? Math.min(...ratings) : null;
+    if (!button) {
+      button = document.createElement("button");
+      button.className = "termscope-policy-trigger";
+      button.type = "button";
+      button.dataset.termscopeCluster = key;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openWidget();
+      });
+    }
 
-  button.title = `Review ${items.length} ${items.length === 1 ? "policy" : "policies"} with TermScopeAI`;
-  button.setAttribute("aria-label", button.title);
-  button.innerHTML = `${shieldSvg}${
-    Number.isFinite(lowest)
-      ? `<span class="termscope-trigger-score ${ratingClass(lowest)}">${lowest}</span>`
-      : ""
-  }`;
+    button.title = `Review ${cluster.length} ${
+      cluster.length === 1 ? "policy" : "policies"
+    } with TermScopeAI`;
+    button.setAttribute("aria-label", button.title);
+    button.innerHTML = shieldSvg;
 
-  if (anchor.nextElementSibling !== button) {
-    anchor.insertAdjacentElement("afterend", button);
-  }
+    if (anchor.nextElementSibling !== button) {
+      anchor.insertAdjacentElement("afterend", button);
+    }
+  });
+
+  document.querySelectorAll(".termscope-policy-trigger").forEach((button) => {
+    if (!liveKeys.has(button.dataset.termscopeCluster)) button.remove();
+  });
 }
 
 function scheduleTriggerSync() {
@@ -415,24 +477,27 @@ function closeWidget() {
 
 function setBody(html) {
   showWidget();
-  host.querySelector("#termscope-body").innerHTML = html;
+  const body = host.querySelector("#termscope-body");
+  body.innerHTML = html;
+  body.scrollTop = 0;
 }
 
 function applySavedPosition() {
-  if (!host || !settings.widgetPosition || host.classList.contains("termscope-clause-mode")) {
-    return;
-  }
+  if (!host || !settings.widgetPosition) return;
 
   const { left, top } = settings.widgetPosition;
   if (!Number.isFinite(left) || !Number.isFinite(top)) return;
 
   const width = host.offsetWidth || 390;
   const height = host.offsetHeight || 160;
+  const nextLeft = Math.max(4, Math.min(left, innerWidth - width - 4));
+  const nextTop = Math.max(4, Math.min(top, innerHeight - height - 4));
 
-  host.style.left = `${Math.max(4, Math.min(left, innerWidth - width - 4))}px`;
-  host.style.top = `${Math.max(4, Math.min(top, innerHeight - height - 4))}px`;
-  host.style.right = "auto";
-  host.style.bottom = "auto";
+  host.classList.add("termscope-user-positioned");
+  host.style.setProperty("left", `${nextLeft}px`, "important");
+  host.style.setProperty("top", `${nextTop}px`, "important");
+  host.style.setProperty("right", "auto", "important");
+  host.style.setProperty("bottom", "auto", "important");
 }
 
 function enableDragging() {
@@ -440,9 +505,7 @@ function enableDragging() {
   let drag = null;
 
   handle.addEventListener("pointerdown", (event) => {
-    if (event.target.closest("button") || host.classList.contains("termscope-clause-mode")) {
-      return;
-    }
+    if (event.target.closest("button")) return;
 
     const rect = host.getBoundingClientRect();
     drag = {
@@ -466,12 +529,11 @@ function enableDragging() {
       Math.min(event.clientY - drag.y, innerHeight - host.offsetHeight - 4)
     );
 
-    Object.assign(host.style, {
-      left: `${left}px`,
-      top: `${top}px`,
-      right: "auto",
-      bottom: "auto"
-    });
+    host.classList.add("termscope-user-positioned");
+    host.style.setProperty("left", `${left}px`, "important");
+    host.style.setProperty("top", `${top}px`, "important");
+    host.style.setProperty("right", "auto", "important");
+    host.style.setProperty("bottom", "auto", "important");
   });
 
   handle.addEventListener("pointerup", async (event) => {
@@ -564,10 +626,88 @@ function ratingLabel(rating) {
   return "Concerning";
 }
 
+function fallbackActionForRisk(risk = {}) {
+  const text = normalize(
+    [
+      risk.title,
+      risk.shortSummary,
+      risk.plainMeaning,
+      risk.whyItMatters,
+      risk.quote
+    ].join(" ")
+  ).toLowerCase();
+
+  if (/biometric|facial recognition|voiceprint|fingerprint/.test(text)) {
+    return "Avoid enabling biometric features unless they are necessary. Use another sign in method when available, and delete stored biometric data through the account or privacy settings if the service allows it.";
+  }
+
+  if (/precise location|geolocation|location data/.test(text)) {
+    return "Turn off precise location access unless the feature truly needs it. Choose approximate location or a one time browser permission when those options are available.";
+  }
+
+  if (/targeted advert|personalized advert|tracking|cookie|analytics/.test(text)) {
+    return "Review the privacy and cookie controls, turn off personalized advertising where available, and limit optional tracking permissions in your browser or device settings.";
+  }
+
+  if (/sell|sale of personal|share|third part|disclos/.test(text)) {
+    return "Use the service's privacy controls to limit sharing where available, opt out of targeted advertising or data sales, and avoid providing optional personal information.";
+  }
+
+  if (/retain|retention|delete|deletion/.test(text)) {
+    return "Check the account and privacy settings for deletion controls, download anything you need first, and contact support if the policy does not clearly explain when retained data is removed.";
+  }
+
+  if (/arbitration|class action|jury trial|dispute/.test(text)) {
+    return "Read the dispute section before accepting, look for any opt out deadline, and save a copy of the terms if you decide to opt out.";
+  }
+
+  if (/automatic renewal|auto.?renew|subscription|refund|nonrefundable|charge/.test(text)) {
+    return "Check the renewal date, cancellation steps, and refund rules before paying. Set a reminder before the next charge so you have time to cancel.";
+  }
+
+  if (/license|ownership|content|intellectual property|sublicens/.test(text)) {
+    return "Only upload content you are comfortable licensing under these terms, remove sensitive files, and keep your own backup of anything important.";
+  }
+
+  if (/artificial intelligence|machine learning|train.*(?:model|ai)/.test(text)) {
+    return "Avoid submitting sensitive or proprietary content, check for an AI training opt out, and remove earlier uploads when the service provides that control.";
+  }
+
+  if (/terminate|termination|suspend|suspension|account access/.test(text)) {
+    return "Keep backups of important content, follow the account rules, and do not rely on this service as the only place where your files or records are stored.";
+  }
+
+  return "Review this clause before accepting, check whether the service provides an opt out or related setting, and avoid providing optional information until you are comfortable with the tradeoff.";
+}
+
+function normalizedActionForRisk(risk = {}) {
+  const action = normalize(risk.action);
+  const invalid =
+    action.length < 18 ||
+    /^(?:high|medium|low|none|n\/?a|not applicable|unknown)$/i.test(action) ||
+    /^(?:severity|risk level)\s*:?\s*(?:high|medium|low)$/i.test(action);
+
+  return invalid ? fallbackActionForRisk(risk) : action;
+}
+
+function normalizeRiskResult(risk = {}) {
+  const severity = ["high", "medium", "low"].includes(risk.severity)
+    ? risk.severity
+    : "medium";
+
+  return {
+    ...risk,
+    severity,
+    action: normalizedActionForRisk({ ...risk, severity })
+  };
+}
+
 function normalizeAnalysisResult(result = {}) {
-  const risks = Array.isArray(result.risks) ? result.risks : [];
+  const risks = Array.isArray(result.risks)
+    ? result.risks.map(normalizeRiskResult)
+    : [];
   const storedRating = Number(result.policyRating);
-  const policyRating = risks.length || result.scoringVersion === "6.0"
+  const policyRating = risks.length || result.scoringVersion === "7.0"
     ? calculateRating(risks)
     : Number.isFinite(storedRating)
       ? storedRating
@@ -578,7 +718,8 @@ function normalizeAnalysisResult(result = {}) {
     risks,
     policyRating,
     ratingLabel: ratingLabel(policyRating),
-    scoringVersion: "6.0"
+    scoringVersion: "7.0",
+    analysisVersion: result.analysisVersion || "legacy"
   };
 }
 
@@ -594,10 +735,14 @@ function savedItemFor(library, policy) {
   return library[canonicalPolicyUrl(policy.url)];
 }
 
+function isCurrentSavedAnalysis(item) {
+  return item?.analysisVersion === "7.0" && Array.isArray(item.risks);
+}
+
 function cacheLibraryItems(library, choices) {
   for (const policy of choices) {
     const item = savedItemFor(library, policy);
-    if (!item || !Array.isArray(item.risks)) continue;
+    if (!isCurrentSavedAnalysis(item)) continue;
 
     analysisCache.set(policyKey(policy), normalizeAnalysisResult(item));
   }
@@ -696,7 +841,11 @@ async function runWithConcurrency(items, limit, worker) {
 
 async function preloadPolicyRatings(choices, library, sessionId) {
   const missing = choices
-    .filter((policy) => !savedItemFor(library, policy) && !analysisCache.has(policyKey(policy)))
+    .filter(
+      (policy) =>
+        !isCurrentSavedAnalysis(savedItemFor(library, policy)) &&
+        !analysisCache.has(policyKey(policy))
+    )
     .slice(0, MAX_PREVIEW_POLICIES);
 
   let completed = 0;
@@ -964,6 +1113,7 @@ async function saveAnalysisToLibrary(policy, result) {
       overview: normalized.overview,
       risks: normalized.risks,
       scoringVersion: normalized.scoringVersion,
+      analysisVersion: normalized.analysisVersion,
       analyzedAt: Date.now()
     }
   });
@@ -1536,15 +1686,7 @@ function markTextInsideElement(element, candidate) {
   }
 }
 
-function clearHighlightTimers() {
-  clearTimeout(highlightTimer);
-  clearTimeout(highlightFadeTimer);
-  highlightTimer = null;
-  highlightFadeTimer = null;
-}
-
 function clearClauseHighlights() {
-  clearHighlightTimers();
 
   queryAcrossRoots("mark.termscope-highlight").forEach((mark) => {
     const parent = mark.parentNode;
@@ -1559,20 +1701,6 @@ function clearClauseHighlights() {
     );
     if (element.id === "termscope-highlight-target") element.removeAttribute("id");
   });
-}
-
-function scheduleHighlightRemoval() {
-  clearHighlightTimers();
-
-  highlightFadeTimer = setTimeout(() => {
-    queryAcrossRoots(".termscope-highlight, .termscope-clause-block-highlight").forEach(
-      (element) => element.classList.add("termscope-highlight-fading")
-    );
-  }, HIGHLIGHT_VISIBLE_MS);
-
-  highlightTimer = setTimeout(() => {
-    clearClauseHighlights();
-  }, HIGHLIGHT_VISIBLE_MS + HIGHLIGHT_FADE_MS);
 }
 
 function highlightClauseMatch(match, scroll = false) {
@@ -1591,7 +1719,6 @@ function highlightClauseMatch(match, scroll = false) {
     target.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
-  scheduleHighlightRemoval();
   return target;
 }
 
@@ -1644,7 +1771,9 @@ function renderClauseDetail(request, located, index = 0, total = 1) {
     ${
       request.action
         ? `
-          <div class="termscope-detail-card termscope-action-card">
+          <div class="termscope-detail-card termscope-action-card ${escapeHtml(
+            request.severity || "medium"
+          )}">
             <h3>What you can do</h3>
             <p>${escapeHtml(request.action)}</p>
           </div>
@@ -1677,13 +1806,11 @@ function renderClauseDetail(request, located, index = 0, total = 1) {
         : ""
     }
 
-    <p class="termscope-locator-status ${located ? "found" : "missing"}">
-      ${
-        located
-          ? "The clause is briefly highlighted with a soft marker that fades automatically."
-          : "The page may still be loading or may use a protected format that cannot be matched automatically."
-      }
-    </p>
+    ${
+      located
+        ? ""
+        : `<p class="termscope-locator-status missing">The page may still be loading or may use a protected format that cannot be matched automatically.</p>`
+    }
   `);
 
   host.querySelector("#termscope-jump-clause").addEventListener("click", () => {
