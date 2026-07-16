@@ -1,6 +1,6 @@
 {
   "name": "termscope-ai",
-  "version": "0.3.0",
+  "version": "5.0.0",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",

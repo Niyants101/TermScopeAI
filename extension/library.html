@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TermScope Policy Library</title>
+  <link rel="stylesheet" href="library.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.8 19 5.9v5.2c0 4.8-2.8 8.4-7 10.1-4.2-1.7-7-5.3-7-10.1V5.9l7-3.1Z" stroke="currentColor" stroke-width="1.9"/><path d="m8.8 12 2 2 4.5-5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div>
+      <strong>TermScope</strong>
+      <span>Policy Library</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <span class="eyebrow">Your reviewed policies</span>
+        <h1>Policy Library</h1>
+        <p>Every policy you analyze is saved locally in your browser. Compare ratings, revisit risks, and favorite the policies you care about.</p>
+      </div>
+      <div class="privacy-note">Stored only in this browser</div>
+    </section>
+
+    <section class="controls" aria-label="Library controls">
+      <label class="search-box">
+        <span class="sr-only">Search policies</span>
+        <input id="search" type="search" placeholder="Search by company or website">
+      </label>
+
+      <select id="type-filter" aria-label="Filter by policy type">
+        <option value="all">All policy types</option>
+        <option value="terms">Terms of Use</option>
+        <option value="privacy">Privacy Policies</option>
+      </select>
+
+      <select id="favorite-filter" aria-label="Filter favorites">
+        <option value="all">All saved policies</option>
+        <option value="favorites">Favorites only</option>
+      </select>
+
+      <select id="sort" aria-label="Sort policies">
+        <option value="rating-desc">Best rating first</option>
+        <option value="rating-asc">Lowest rating first</option>
+        <option value="recent">Recently analyzed</option>
+        <option value="name">Company name</option>
+      </select>
+    </section>
+
+    <section class="summary-row" id="summary-row"></section>
+    <section class="policy-grid" id="policy-grid"></section>
+
+    <section class="empty-state" id="empty-state" hidden>
+      <div class="empty-shield">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2.8 19 5.9v5.2c0 4.8-2.8 8.4-7 10.1-4.2-1.7-7-5.3-7-10.1V5.9l7-3.1Z" stroke="currentColor" stroke-width="1.9"/><path d="m8.8 12 2 2 4.5-5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <h2>No saved policies yet</h2>
+      <p>Analyze a Terms of Use or Privacy Policy with TermScope and it will appear here.</p>
+    </section>
+  </main>
+
+  <template id="policy-card-template">
+    <article class="policy-card">
+      <div class="card-top">
+        <div class="company-block">
+          <span class="policy-type"></span>
+          <h2 class="company-name"></h2>
+          <p class="hostname"></p>
+        </div>
+        <div class="rating-circle">
+          <strong class="rating-value"></strong>
+          <span>out of 10</span>
+        </div>
+      </div>
+
+      <p class="overview"></p>
+
+      <div class="risk-summary"></div>
+
+      <details class="risk-details">
+        <summary>View important clauses</summary>
+        <div class="risk-list"></div>
+      </details>
+
+      <div class="card-actions">
+        <button class="favorite-button" type="button"></button>
+        <button class="open-button" type="button">Open policy</button>
+        <button class="remove-button" type="button">Remove</button>
+      </div>
+
+      <p class="reviewed-date"></p>
+    </article>
+  </template>
+
+  <script src="library.js"></script>
+</body>
+</html>
