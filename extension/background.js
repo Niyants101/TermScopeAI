@@ -362,34 +362,31 @@ async function saveLibraryItem(item) {
   }
 
   const library = await readLibrary();
+
   const candidate = normalizeLibraryItem({
     ...item,
     analyzedAt: item.analyzedAt || Date.now()
   });
+
   const key = libraryIdentityKey(candidate);
   const previous = library[key];
-  const samePrimaryPolicy =
-    previous &&
-    canonicalUrl(previous.url) === canonicalUrl(candidate.url) &&
-    isPrimaryPolicyLabel(candidate.label, candidate.type);
-  const normalized = samePrimaryPolicy
-    ? {
-        ...candidate,
-        favorite: Boolean(previous.favorite || candidate.favorite)
-      }
-    : choosePreferredLibraryItem(previous, candidate);
 
-  library[key] = normalized;
+  library[key] = {
+    ...candidate,
+    favorite: Boolean(previous?.favorite || candidate.favorite)
+  };
 
   const entries = Object.entries(library)
     .sort((a, b) => (b[1].analyzedAt || 0) - (a[1].analyzedAt || 0))
     .slice(0, MAX_LIBRARY_ITEMS);
 
+  const updatedLibrary = Object.fromEntries(entries);
+
   await chrome.storage.local.set({
-    [LIBRARY_KEY]: Object.fromEntries(entries)
+    [LIBRARY_KEY]: updatedLibrary
   });
 
-  return normalized;
+  return updatedLibrary[key];
 }
 
 async function toggleFavorite(url) {
