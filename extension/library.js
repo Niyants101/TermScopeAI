@@ -19,6 +19,38 @@ function canonicalUrl(value) {
   }
 }
 
+function calculateRating(risks = []) {
+  const counts = risks.reduce(
+    (total, risk) => {
+      const severity = ["high", "medium", "low"].includes(risk?.severity)
+        ? risk.severity
+        : "medium";
+      total[severity] += 1;
+      return total;
+    },
+    { high: 0, medium: 0, low: 0 }
+  );
+
+  let penalty = counts.high * 1.9 + counts.medium * 0.8 + counts.low * 0.25;
+  if (counts.high > 1) penalty += (counts.high - 1) * 0.6;
+  if (counts.high >= 4) penalty += 0.4;
+  if (counts.medium >= 4) penalty += 0.35;
+
+  let rating = Math.max(0, Math.min(10, 10 - penalty));
+  if (counts.high === 1) rating = Math.min(rating, 7.5);
+  if (counts.high === 2) rating = Math.min(rating, 6);
+  if (counts.high === 3) rating = Math.min(rating, 4.5);
+  if (counts.high >= 4) rating = Math.min(rating, 3.5);
+
+  return Math.round(rating * 10) / 10;
+}
+
+function normalizedRating(item) {
+  if (Array.isArray(item?.risks)) return calculateRating(item.risks);
+  const stored = Number(item?.policyRating);
+  return Number.isFinite(stored) ? stored : null;
+}
+
 function ratingClass(rating) {
   if (rating >= 8) return "good";
   if (rating >= 5) return "mixed";
@@ -41,7 +73,7 @@ function formatDate(value) {
 function countsForRisks(risks = []) {
   return risks.reduce(
     (counts, risk) => {
-      const severity = ["high", "medium", "low"].includes(risk.severity)
+      const severity = ["high", "medium", "low"].includes(risk?.severity)
         ? risk.severity
         : "medium";
       counts[severity] += 1;
@@ -57,32 +89,34 @@ function filteredItems() {
   const favorites = favoriteFilter.value;
   const sort = sortSelect.value;
 
-  const items = Object.values(library).filter((item) => {
-    const searchText = [item.sourceName, item.hostname, item.label, item.url]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
+  const items = Object.values(library)
+    .map((item) => ({
+      ...item,
+      policyRating: normalizedRating(item)
+    }))
+    .filter((item) => {
+      const searchText = [item.sourceName, item.hostname, item.label, item.url]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
 
-    if (query && !searchText.includes(query)) return false;
-    if (type !== "all" && item.type !== type) return false;
-    if (favorites === "favorites" && !item.favorite) return false;
-    return true;
-  });
+      if (query && !searchText.includes(query)) return false;
+      if (type !== "all" && item.type !== type) return false;
+      if (favorites === "favorites" && !item.favorite) return false;
+      return true;
+    });
 
   items.sort((a, b) => {
-    if (sort === "rating-asc") {
-      return (a.policyRating ?? 10) - (b.policyRating ?? 10);
-    }
+    const aRating = Number.isFinite(a.policyRating) ? a.policyRating : 10;
+    const bRating = Number.isFinite(b.policyRating) ? b.policyRating : 10;
 
-    if (sort === "recent") {
-      return (b.analyzedAt || 0) - (a.analyzedAt || 0);
-    }
-
+    if (sort === "rating-asc") return aRating - bRating;
+    if (sort === "recent") return (b.analyzedAt || 0) - (a.analyzedAt || 0);
     if (sort === "name") {
       return String(a.sourceName || "").localeCompare(String(b.sourceName || ""));
     }
 
-    return (b.policyRating ?? 10) - (a.policyRating ?? 10);
+    return bRating - aRating;
   });
 
   return items;
@@ -91,14 +125,17 @@ function filteredItems() {
 function renderSummary(items) {
   const total = items.length;
   const favorites = items.filter((item) => item.favorite).length;
-  const average = total
+  const validRatings = items
+    .map((item) => Number(item.policyRating))
+    .filter(Number.isFinite);
+  const average = validRatings.length
     ? Math.round(
-        (items.reduce((sum, item) => sum + Number(item.policyRating || 0), 0) /
-          total) *
+        (validRatings.reduce((sum, rating) => sum + rating, 0) /
+          validRatings.length) *
           10
       ) / 10
     : 0;
-  const concerning = items.filter((item) => Number(item.policyRating) < 5).length;
+  const concerning = validRatings.filter((rating) => rating < 5).length;
 
   summaryRow.innerHTML = `
     <article class="summary-card"><strong>${total}</strong><span>Policies shown</span></article>
@@ -155,7 +192,9 @@ async function toggleFavorite(item) {
 }
 
 async function removeItem(item) {
-  const confirmed = confirm(`Remove ${item.sourceName || "this policy"} from your library?`);
+  const confirmed = confirm(
+    `Remove ${item.sourceName || "this policy"} from your library?`
+  );
   if (!confirmed) return;
 
   const response = await chrome.runtime.sendMessage({

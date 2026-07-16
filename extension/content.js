@@ -13,6 +13,11 @@ const DEFAULT_SETTINGS = {
   widgetPosition: null
 };
 
+const MAX_PREVIEW_POLICIES = 8;
+const PREVIEW_CONCURRENCY = 2;
+const HIGHLIGHT_VISIBLE_MS = 8000;
+const HIGHLIGHT_FADE_MS = 1200;
+
 let settings = { ...DEFAULT_SETTINGS };
 let policies = [];
 let host = null;
@@ -23,10 +28,17 @@ let currentView = "picker";
 let settingsReturnView = "picker";
 let currentClauseRequest = null;
 let triggerSyncTimer = null;
+let pickerSession = 0;
+let highlightTimer = null;
+let highlightFadeTimer = null;
+let clauseNavigator = null;
+
+const analysisCache = new Map();
+const analysisJobs = new Map();
 
 const shieldSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2.8 19 5.9v5.2c0 4.8-2.8 8.4-7 10.1-4.2-1.7-7-5.3-7-10.1V5.9l7-3.1Z" stroke="currentColor" stroke-width="1.9"/><path d="m8.8 12 2 2 4.5-5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-const gearSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13.1v-2.2l-2-.7a7.7 7.7 0 0 0-.7-1.6l.9-1.9-1.6-1.6-1.9.9a7.7 7.7 0 0 0-1.6-.7l-.7-2H9.6l-.7 2a7.7 7.7 0 0 0-1.6.7l-1.9-.9-1.6 1.6.9 1.9a7.7 7.7 0 0 0-.7 1.6l-2 .7v2.2l2 .7c.2.6.4 1.1.7 1.6l-.9 1.9 1.6 1.6 1.9-.9c.5.3 1 .5 1.6.7l.7 2h2.2l.7-2c.6-.2 1.1-.4 1.6-.7l1.9.9 1.6-1.6-.9-1.9c.3-.5.5-1 .7-1.6l2-.7Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+const gearSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.42 1.42-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V20h-2v-.08A1.7 1.7 0 0 0 12.35 18a1.7 1.7 0 0 0-1.88.34l-.06.06L9 16.98l.06-.06A1.7 1.7 0 0 0 9.4 15a1.7 1.7 0 0 0-1.56-1.03H7.76v-2h.08A1.7 1.7 0 0 0 9.4 10.94a1.7 1.7 0 0 0-.34-1.88L9 9l1.42-1.42.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 13.4 6.42V6h2v.42a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 9l-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.03h.08v2h-.08A1.7 1.7 0 0 0 19.4 15Z" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 const closeSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
 
@@ -37,6 +49,9 @@ const librarySvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><pat
 const backSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m15 18-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 const jumpSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v13M7 12l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 21h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+
+const previousSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m15 18-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const nextSvg = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 18 6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function escapeHtml(value = "") {
   return String(value).replace(
@@ -66,6 +81,10 @@ function canonicalPolicyUrl(value) {
   }
 }
 
+function policyKey(policy) {
+  return `${policy?.type || "policy"}:${canonicalPolicyUrl(policy?.url)}`;
+}
+
 function brandFromHostname(hostname) {
   const parts = String(hostname || "")
     .replace(/^www\./, "")
@@ -88,8 +107,8 @@ function sourceNameForPolicy(anchor, type) {
   const cleaned = label
     .replace(POLICY_TEXT.terms, "")
     .replace(POLICY_TEXT.privacy, "")
-    .replace(/[\s'’:\-|]+$/g, "")
-    .replace(/^[\s'’:\-|]+/g, "")
+    .replace(/[\s'’:|]+$/g, "")
+    .replace(/^[\s'’:|]+/g, "")
     .replace(/['’]s$/i, "")
     .trim();
 
@@ -104,6 +123,12 @@ function sourceNameForPolicy(anchor, type) {
   }
 }
 
+function explicitPolicyType(label) {
+  if (POLICY_TEXT.terms.test(label)) return "terms";
+  if (POLICY_TEXT.privacy.test(label)) return "privacy";
+  return null;
+}
+
 function classifyPolicy(anchor) {
   const label = normalize(
     [
@@ -115,23 +140,40 @@ function classifyPolicy(anchor) {
       .join(" ")
   );
 
-  const href = anchor.href || "";
+  const explicitType = explicitPolicyType(label);
+  let target;
+  let current;
 
-  if (
-    POLICY_TEXT.terms.test(label) ||
-    /\/(?:terms|tos|terms-of-use|terms-of-service|user-agreement)(?:[\/?#_-]|$)/i.test(
-      href
-    )
-  ) {
+  try {
+    target = new URL(anchor.href, location.href);
+    current = new URL(location.href);
+  } catch {
+    return null;
+  }
+
+  if (!/^https?:$/i.test(target.protocol)) return null;
+
+  const sameDocument =
+    target.origin === current.origin &&
+    target.pathname.replace(/\/$/, "") === current.pathname.replace(/\/$/, "") &&
+    target.search === current.search;
+
+  if (sameDocument && !explicitType) return null;
+  if (sameDocument && explicitType && canonicalPolicyUrl(target.href) === canonicalPolicyUrl(current.href)) {
+    return null;
+  }
+
+  if (explicitType) return explicitType;
+
+  if (label.length > 120 || !/\b(?:policy|terms|agreement|conditions|privacy)\b/i.test(label)) {
+    return null;
+  }
+
+  if (/\/(?:terms|tos|terms-of-use|terms-of-service|user-agreement)(?:[/?#_-]|$)/i.test(target.href)) {
     return "terms";
   }
 
-  if (
-    POLICY_TEXT.privacy.test(label) ||
-    /\/(?:privacy|privacy-policy|privacy-notice|data-policy)(?:[\/?#_-]|$)/i.test(
-      href
-    )
-  ) {
+  if (/\/(?:privacy|privacy-policy|privacy-notice|data-policy)(?:[/?#_-]|$)/i.test(target.href)) {
     return "privacy";
   }
 
@@ -141,9 +183,7 @@ function classifyPolicy(anchor) {
 function policyFromAnchor(anchor) {
   const type = classifyPolicy(anchor);
 
-  if (!type || !/^https?:/i.test(anchor.href)) {
-    return null;
-  }
+  if (!type || !/^https?:/i.test(anchor.href)) return null;
 
   let hostname = "";
 
@@ -154,7 +194,6 @@ function policyFromAnchor(anchor) {
   }
 
   return {
-    id: anchor.dataset.termscopePolicyId || "",
     type,
     label:
       normalize(anchor.textContent) ||
@@ -170,6 +209,7 @@ function collectPolicyAnchors() {
   const found = [];
 
   document.querySelectorAll("a[href]").forEach((anchor) => {
+    if (anchor.closest("#termscope-widget-host")) return;
     const item = policyFromAnchor(anchor);
     if (item) found.push(item);
   });
@@ -181,7 +221,7 @@ function collectPolicies() {
   const unique = new Map();
 
   for (const item of collectPolicyAnchors()) {
-    const key = `${item.type}:${canonicalPolicyUrl(item.url)}`;
+    const key = policyKey(item);
     if (!unique.has(key)) unique.set(key, item);
   }
 
@@ -195,67 +235,82 @@ function removeAllPolicyTriggers() {
     .forEach((button) => button.remove());
 }
 
-function syncPolicyTriggers() {
+function selectTriggerAnchor(items) {
+  if (!items.length) return null;
+
+  const parentGroups = new Map();
+
+  for (const item of items) {
+    const parent = item.anchor.parentElement;
+    if (!parent) continue;
+
+    if (!parentGroups.has(parent)) parentGroups.set(parent, []);
+    parentGroups.get(parent).push(item);
+  }
+
+  const bestGroup = [...parentGroups.values()]
+    .sort((a, b) => {
+      const aTypes = new Set(a.map((item) => item.type)).size;
+      const bTypes = new Set(b.map((item) => item.type)).size;
+      return bTypes - aTypes || b.length - a.length;
+    })[0];
+
+  if (bestGroup?.length >= 2) return bestGroup[bestGroup.length - 1].anchor;
+  return items[items.length - 1].anchor;
+}
+
+async function syncPolicyTriggers() {
   if (!settings.enabled) {
     removeAllPolicyTriggers();
     return;
   }
 
-  const items = collectPolicyAnchors();
-  const liveIds = new Set();
+  const items = collectPolicies();
+  const anchor = selectTriggerAnchor(items);
 
-  for (const item of items) {
-    const anchor = item.anchor;
-
-    if (!anchor.dataset.termscopePolicyId) {
-      anchor.dataset.termscopePolicyId = crypto.randomUUID();
-    }
-
-    const id = anchor.dataset.termscopePolicyId;
-    liveIds.add(id);
-
-    let button = document.querySelector(
-      `.termscope-policy-trigger[data-termscope-for="${id}"]`
-    );
-
-    if (!button) {
-      button = document.createElement("button");
-      button.className = "termscope-policy-trigger";
-      button.dataset.termscopeFor = id;
-      button.type = "button";
-      button.title = `Check ${item.sourceName} ${
-        item.type === "terms" ? "Terms" : "Privacy Policy"
-      }`;
-      button.setAttribute("aria-label", button.title);
-      button.innerHTML = shieldSvg;
-
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        const freshPolicy = policyFromAnchor(anchor);
-        if (!freshPolicy) return;
-
-        showWidget();
-        analyzePolicies([freshPolicy]);
-      });
-
-      anchor.insertAdjacentElement("afterend", button);
-    }
+  if (!anchor) {
+    removeAllPolicyTriggers();
+    return;
   }
 
-  document
-    .querySelectorAll(".termscope-policy-trigger[data-termscope-for]")
-    .forEach((button) => {
-      if (!liveIds.has(button.dataset.termscopeFor)) {
-        button.remove();
-      }
+  let button = document.querySelector("#termscope-page-trigger");
+
+  if (!button) {
+    button = document.createElement("button");
+    button.id = "termscope-page-trigger";
+    button.className = "termscope-policy-trigger";
+    button.type = "button";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openWidget();
     });
+  }
+
+  const library = await readSavedRatings().catch(() => ({}));
+  const ratings = items
+    .map((item) => library[canonicalPolicyUrl(item.url)]?.policyRating)
+    .filter(Number.isFinite);
+  const lowest = ratings.length ? Math.min(...ratings) : null;
+
+  button.title = `Review ${items.length} ${items.length === 1 ? "policy" : "policies"} with TermScopeAI`;
+  button.setAttribute("aria-label", button.title);
+  button.innerHTML = `${shieldSvg}${
+    Number.isFinite(lowest)
+      ? `<span class="termscope-trigger-score ${ratingClass(lowest)}">${lowest}</span>`
+      : ""
+  }`;
+
+  if (anchor.nextElementSibling !== button) {
+    anchor.insertAdjacentElement("afterend", button);
+  }
 }
 
 function scheduleTriggerSync() {
   clearTimeout(triggerSyncTimer);
-  triggerSyncTimer = setTimeout(syncPolicyTriggers, 250);
+  triggerSyncTimer = setTimeout(() => {
+    syncPolicyTriggers().catch(() => {});
+  }, 300);
 }
 
 function createWidget() {
@@ -278,7 +333,7 @@ function createWidget() {
         </button>
 
         <div class="termscope-brand">
-          <strong>TermScope</strong>
+          <strong>TermScopeAI</strong>
           <span>${escapeHtml(location.hostname)}</span>
         </div>
 
@@ -344,6 +399,11 @@ function createWidget() {
   requestAnimationFrame(applySavedPosition);
 }
 
+function setClauseMode(enabled) {
+  createWidget();
+  host.classList.toggle("termscope-clause-mode", Boolean(enabled));
+}
+
 function showWidget() {
   createWidget();
   host.classList.remove("termscope-hidden");
@@ -359,7 +419,9 @@ function setBody(html) {
 }
 
 function applySavedPosition() {
-  if (!host || !settings.widgetPosition) return;
+  if (!host || !settings.widgetPosition || host.classList.contains("termscope-clause-mode")) {
+    return;
+  }
 
   const { left, top } = settings.widgetPosition;
   if (!Number.isFinite(left) || !Number.isFinite(top)) return;
@@ -378,7 +440,9 @@ function enableDragging() {
   let drag = null;
 
   handle.addEventListener("pointerdown", (event) => {
-    if (event.target.closest("button")) return;
+    if (event.target.closest("button") || host.classList.contains("termscope-clause-mode")) {
+      return;
+    }
 
     const rect = host.getBoundingClientRect();
     drag = {
@@ -426,7 +490,18 @@ function enableDragging() {
   });
 }
 
+function destroyClauseNavigator() {
+  if (clauseNavigator?.scrollHandler) {
+    removeEventListener("scroll", clauseNavigator.scrollHandler, true);
+  }
+
+  clauseNavigator = null;
+  clearClauseHighlights();
+}
+
 function openWidget() {
+  destroyClauseNavigator();
+  setClauseMode(false);
   showWidget();
   renderPolicyPicker();
 }
@@ -457,6 +532,56 @@ function ratingClass(rating) {
   return "poor";
 }
 
+function calculateRating(risks = []) {
+  const counts = risks.reduce(
+    (total, risk) => {
+      const severity = ["high", "medium", "low"].includes(risk?.severity)
+        ? risk.severity
+        : "medium";
+      total[severity] += 1;
+      return total;
+    },
+    { high: 0, medium: 0, low: 0 }
+  );
+
+  let penalty = counts.high * 1.9 + counts.medium * 0.8 + counts.low * 0.25;
+  if (counts.high > 1) penalty += (counts.high - 1) * 0.6;
+  if (counts.high >= 4) penalty += 0.4;
+  if (counts.medium >= 4) penalty += 0.35;
+
+  let rating = Math.max(0, Math.min(10, 10 - penalty));
+  if (counts.high === 1) rating = Math.min(rating, 7.5);
+  if (counts.high === 2) rating = Math.min(rating, 6);
+  if (counts.high === 3) rating = Math.min(rating, 4.5);
+  if (counts.high >= 4) rating = Math.min(rating, 3.5);
+
+  return Math.round(rating * 10) / 10;
+}
+
+function ratingLabel(rating) {
+  if (rating >= 8) return "Strong";
+  if (rating >= 5) return "Mixed";
+  return "Concerning";
+}
+
+function normalizeAnalysisResult(result = {}) {
+  const risks = Array.isArray(result.risks) ? result.risks : [];
+  const storedRating = Number(result.policyRating);
+  const policyRating = risks.length || result.scoringVersion === "6.0"
+    ? calculateRating(risks)
+    : Number.isFinite(storedRating)
+      ? storedRating
+      : calculateRating(risks);
+
+  return {
+    ...result,
+    risks,
+    policyRating,
+    ratingLabel: ratingLabel(policyRating),
+    scoringVersion: "6.0"
+  };
+}
+
 async function readSavedRatings() {
   const response = await chrome.runtime.sendMessage({
     type: "TERMSCOPE_GET_LIBRARY"
@@ -465,26 +590,153 @@ async function readSavedRatings() {
   return response?.ok ? response.library || {} : {};
 }
 
-function savedRatingFor(library, url) {
-  const key = canonicalPolicyUrl(url);
-  return library[key]?.policyRating;
+function savedItemFor(library, policy) {
+  return library[canonicalPolicyUrl(policy.url)];
+}
+
+function cacheLibraryItems(library, choices) {
+  for (const policy of choices) {
+    const item = savedItemFor(library, policy);
+    if (!item || !Array.isArray(item.risks)) continue;
+
+    analysisCache.set(policyKey(policy), normalizeAnalysisResult(item));
+  }
+}
+
+function ratingChipHtml(rating, state = "ready") {
+  if (state === "checking") {
+    return `<span class="termscope-mini-rating checking">Checking</span>`;
+  }
+
+  if (state === "unavailable") {
+    return `<span class="termscope-mini-rating unavailable">Unavailable</span>`;
+  }
+
+  return `<span class="termscope-mini-rating ${ratingClass(rating)}">${rating}/10</span>`;
+}
+
+function sortPolicyList(list) {
+  const buttons = [...list.querySelectorAll(".termscope-policy-choice")];
+
+  buttons
+    .sort((a, b) => {
+      const aRating = Number(a.dataset.rating);
+      const bRating = Number(b.dataset.rating);
+      const aFinite = Number.isFinite(aRating);
+      const bFinite = Number.isFinite(bRating);
+
+      if (aFinite && bFinite) return aRating - bRating;
+      if (aFinite) return -1;
+      if (bFinite) return 1;
+      return 0;
+    })
+    .forEach((button) => list.appendChild(button));
+}
+
+function updatePickerRating(policy, result, sessionId) {
+  if (!host || currentView !== "picker" || sessionId !== pickerSession) return;
+
+  const key = policyKey(policy);
+  const button = [...host.querySelectorAll(".termscope-policy-choice")].find(
+    (candidate) => candidate.dataset.policyKey === key
+  );
+
+  if (!button) return;
+
+  const right = button.querySelector(".termscope-policy-choice-right");
+
+  if (result) {
+    const normalized = normalizeAnalysisResult(result);
+    button.dataset.rating = String(normalized.policyRating);
+    right.innerHTML = `${ratingChipHtml(normalized.policyRating)}<span class="termscope-chevron">›</span>`;
+  } else {
+    delete button.dataset.rating;
+    right.innerHTML = `${ratingChipHtml(null, "unavailable")}<span class="termscope-chevron">›</span>`;
+  }
+
+  sortPolicyList(button.closest(".termscope-policy-list"));
+}
+
+function updatePickerProgress(completed, total, sessionId) {
+  if (!host || currentView !== "picker" || sessionId !== pickerSession) return;
+
+  const status = host.querySelector("#termscope-preview-status");
+  if (!status) return;
+
+  if (!total) {
+    status.textContent = "Ratings are ready. The lowest scores appear first.";
+    status.classList.add("ready");
+    return;
+  }
+
+  if (completed >= total) {
+    status.textContent = "Ratings are ready. The lowest scores appear first.";
+    status.classList.add("ready");
+  } else {
+    status.textContent = `Checking ratings ${completed} of ${total}`;
+  }
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  let cursor = 0;
+
+  const runners = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        await worker(items[index], index);
+      }
+    }
+  );
+
+  await Promise.all(runners);
+}
+
+async function preloadPolicyRatings(choices, library, sessionId) {
+  const missing = choices
+    .filter((policy) => !savedItemFor(library, policy) && !analysisCache.has(policyKey(policy)))
+    .slice(0, MAX_PREVIEW_POLICIES);
+
+  let completed = 0;
+  updatePickerProgress(completed, missing.length, sessionId);
+
+  if (!missing.length) return;
+
+  await runWithConcurrency(missing, PREVIEW_CONCURRENCY, async (policy) => {
+    try {
+      const result = await getPolicyAnalysis(policy);
+      updatePickerRating(policy, result, sessionId);
+    } catch {
+      updatePickerRating(policy, null, sessionId);
+    } finally {
+      completed += 1;
+      updatePickerProgress(completed, missing.length, sessionId);
+    }
+  });
+
+  syncPolicyTriggers().catch(() => {});
 }
 
 async function renderPolicyPicker() {
+  destroyClauseNavigator();
+  setClauseMode(false);
   currentView = "picker";
   currentClauseRequest = null;
+  pickerSession += 1;
+  const sessionId = pickerSession;
 
   const choices = collectPolicies();
   const library = await readSavedRatings();
+  cacheLibraryItems(library, choices);
 
   if (!choices.length) {
     setBody(`
       <div class="termscope-empty-state">
         <div class="termscope-empty-icon">${shieldSvg}</div>
         <h2>No policies found</h2>
-        <p>
-          TermScope could not find a Terms of Use or Privacy Policy link on this page.
-        </p>
+        <p>TermScopeAI could not find a Terms of Use or Privacy Policy link on this page.</p>
       </div>
     `);
     return;
@@ -495,6 +747,17 @@ async function renderPolicyPicker() {
   const renderGroup = (title, items) => {
     if (!items.length) return "";
 
+    const sorted = [...items].sort((a, b) => {
+      const aRating = analysisCache.get(policyKey(a))?.policyRating;
+      const bRating = analysisCache.get(policyKey(b))?.policyRating;
+      const aFinite = Number.isFinite(aRating);
+      const bFinite = Number.isFinite(bRating);
+      if (aFinite && bFinite) return aRating - bRating;
+      if (aFinite) return -1;
+      if (bFinite) return 1;
+      return 0;
+    });
+
     return `
       <section class="termscope-policy-group">
         <div class="termscope-group-title">
@@ -503,15 +766,18 @@ async function renderPolicyPicker() {
         </div>
 
         <div class="termscope-policy-list">
-          ${items
+          ${sorted
             .map((item) => {
-              const savedRating = savedRatingFor(library, item.url);
+              const cached = analysisCache.get(policyKey(item));
+              const savedRating = cached?.policyRating;
 
               return `
                 <button
                   class="termscope-policy-choice"
+                  data-policy-key="${escapeHtml(policyKey(item))}"
                   data-policy-url="${escapeHtml(item.url)}"
                   data-policy-type="${escapeHtml(item.type)}"
+                  ${Number.isFinite(savedRating) ? `data-rating="${savedRating}"` : ""}
                   type="button"
                 >
                   <span class="termscope-policy-source">
@@ -522,10 +788,8 @@ async function renderPolicyPicker() {
                   <span class="termscope-policy-choice-right">
                     ${
                       Number.isFinite(savedRating)
-                        ? `<span class="termscope-mini-rating ${ratingClass(
-                            savedRating
-                          )}">${savedRating}/10</span>`
-                        : `<span class="termscope-analyze-label">Analyze</span>`
+                        ? ratingChipHtml(savedRating)
+                        : ratingChipHtml(null, "checking")
                     }
                     <span class="termscope-chevron">›</span>
                   </span>
@@ -543,7 +807,8 @@ async function renderPolicyPicker() {
       <div>
         <span class="termscope-eyebrow">Policies detected</span>
         <h2>${choices.length} ${choices.length === 1 ? "policy" : "policies"} found</h2>
-        <p>Choose one policy to analyze. Each policy receives its own rating and explanation.</p>
+        <p>TermScopeAI checks the ratings first so you can open the most concerning policy.</p>
+        <div class="termscope-preview-status" id="termscope-preview-status">Checking ratings</div>
       </div>
     </div>
 
@@ -556,15 +821,14 @@ async function renderPolicyPicker() {
     </button>
   `);
 
+  host.querySelectorAll(".termscope-policy-list").forEach(sortPolicyList);
+
   host
     .querySelectorAll(".termscope-policy-choice")
     .forEach((button) => {
       button.addEventListener("click", () => {
         const selected = choices.find(
-          (item) =>
-            canonicalPolicyUrl(item.url) ===
-              canonicalPolicyUrl(button.dataset.policyUrl) &&
-            item.type === button.dataset.policyType
+          (item) => policyKey(item) === button.dataset.policyKey
         );
 
         if (selected) analyzePolicies([selected]);
@@ -576,9 +840,11 @@ async function renderPolicyPicker() {
     .addEventListener("click", () => {
       chrome.runtime.sendMessage({ type: "TERMSCOPE_OPEN_LIBRARY" });
     });
+
+  preloadPolicyRatings(choices, library, sessionId).catch(() => {});
 }
 
-function extractRelevantText(text, maxChars = 16000) {
+function extractRelevantText(text, maxChars = 18000) {
   const cleaned = String(text || "")
     .replace(/\r/g, "")
     .replace(/[ \t]+/g, " ")
@@ -589,7 +855,7 @@ function extractRelevantText(text, maxChars = 16000) {
 
   const keywords = [
     /sell|sale of personal|share.{0,30}(data|information)|third part/i,
-    /track|advertis|analytics|cookie|device identifier|location/i,
+    /track|advertis|analytics|cookie|device identifier|location|biometric/i,
     /arbitration|class action|jury trial|governing law|dispute/i,
     /automatic.{0,15}renew|subscription|refund|nonrefundable|charge/i,
     /license.{0,30}(content|upload)|ownership|intellectual property/i,
@@ -624,7 +890,6 @@ function extractRelevantText(text, maxChars = 16000) {
   });
 
   const selected = new Map();
-
   pieces.slice(0, 4).forEach((part, index) => selected.set(index, part));
 
   scored
@@ -646,7 +911,7 @@ function extractRelevantText(text, maxChars = 16000) {
     .map((entry) => entry[1])
     .join("\n\n");
 
-  if (output.length < Math.min(4500, maxChars)) {
+  if (output.length < Math.min(5000, maxChars)) {
     output = cleaned.slice(0, maxChars);
   }
 
@@ -684,29 +949,35 @@ function htmlToReadableDocument(html, url, contentType) {
   };
 }
 
-async function analyzePolicies(selected) {
-  const policy = selected[0];
-  if (!policy) return;
+async function saveAnalysisToLibrary(policy, result) {
+  const normalized = normalizeAnalysisResult(result);
+  const response = await chrome.runtime.sendMessage({
+    type: "TERMSCOPE_SAVE_LIBRARY",
+    item: {
+      url: policy.url,
+      type: policy.type,
+      label: policy.label,
+      sourceName: policy.sourceName,
+      hostname: policy.hostname,
+      policyRating: normalized.policyRating,
+      ratingLabel: normalized.ratingLabel,
+      overview: normalized.overview,
+      risks: normalized.risks,
+      scoringVersion: normalized.scoringVersion,
+      analyzedAt: Date.now()
+    }
+  });
 
-  lastSelectedPolicies = [policy];
-  currentPolicy = policy;
-  currentAnalysis = null;
-  currentView = "loading";
+  return response?.ok ? response.item : normalized;
+}
 
-  setBody(`
-    ${backButtonHtml()}
-    <div class="termscope-status">
-      <div class="termscope-spinner"></div>
-      <strong>Reading ${escapeHtml(policy.sourceName)} ${escapeHtml(
-        policyTypeLabel(policy.type)
-      )}</strong>
-      <p>TermScope is reading this policy without leaving the current page.</p>
-    </div>
-  `);
+async function getPolicyAnalysis(policy) {
+  const key = policyKey(policy);
 
-  host.querySelector("#termscope-back-btn").addEventListener("click", renderPolicyPicker);
+  if (analysisCache.has(key)) return analysisCache.get(key);
+  if (analysisJobs.has(key)) return analysisJobs.get(key);
 
-  try {
+  const job = (async () => {
     const fetched = await chrome.runtime.sendMessage({
       type: "TERMSCOPE_FETCH_POLICY",
       url: policy.url
@@ -725,17 +996,6 @@ async function analyzePolicies(selected) {
     if (documentData.text.length < 100) {
       throw new Error(`${policy.label} did not contain enough readable text.`);
     }
-
-    setBody(`
-      ${backButtonHtml()}
-      <div class="termscope-status">
-        <div class="termscope-spinner"></div>
-        <strong>Explaining the important clauses</strong>
-        <p>The fast AI model is checking the parts most likely to affect you.</p>
-      </div>
-    `);
-
-    host.querySelector("#termscope-back-btn").addEventListener("click", renderPolicyPicker);
 
     const response = await chrome.runtime.sendMessage({
       type: "TERMSCOPE_ANALYZE",
@@ -761,39 +1021,69 @@ async function analyzePolicies(selected) {
       throw new Error(response?.error || "AI analysis failed.");
     }
 
-    currentAnalysis = response.result;
-    await saveAnalysisToLibrary(policy, response.result);
-    renderResults(response.result, policy);
+    const normalized = normalizeAnalysisResult(response.result);
+    const saved = await saveAnalysisToLibrary(policy, normalized);
+    const finalResult = normalizeAnalysisResult(saved);
+    analysisCache.set(key, finalResult);
+    return finalResult;
+  })();
+
+  analysisJobs.set(key, job);
+
+  try {
+    return await job;
+  } finally {
+    analysisJobs.delete(key);
+  }
+}
+
+async function analyzePolicies(selected) {
+  const policy = selected[0];
+  if (!policy) return;
+
+  destroyClauseNavigator();
+  setClauseMode(false);
+  lastSelectedPolicies = [policy];
+  currentPolicy = policy;
+  currentAnalysis = null;
+  currentView = "loading";
+
+  const cached = analysisCache.get(policyKey(policy));
+
+  if (cached) {
+    renderResults(cached, policy);
+    return;
+  }
+
+  setBody(`
+    ${backButtonHtml()}
+    <div class="termscope-status">
+      <div class="termscope-spinner"></div>
+      <strong>Finishing the ${escapeHtml(policyTypeLabel(policy.type))} review</strong>
+      <p>TermScopeAI is checking the most important clauses and calculating the rating.</p>
+    </div>
+  `);
+
+  host.querySelector("#termscope-back-btn").addEventListener("click", renderPolicyPicker);
+
+  try {
+    const result = await getPolicyAnalysis(policy);
+    currentAnalysis = result;
+    renderResults(result, policy);
   } catch (error) {
     renderError(error.message);
   }
 }
 
-async function saveAnalysisToLibrary(policy, result) {
-  await chrome.runtime.sendMessage({
-    type: "TERMSCOPE_SAVE_LIBRARY",
-    item: {
-      url: policy.url,
-      type: policy.type,
-      label: policy.label,
-      sourceName: policy.sourceName,
-      hostname: policy.hostname,
-      policyRating: result.policyRating,
-      ratingLabel: result.ratingLabel,
-      overview: result.overview,
-      risks: result.risks,
-      analyzedAt: Date.now()
-    }
-  });
-}
-
 function renderResults(result, policy = currentPolicy) {
+  destroyClauseNavigator();
+  setClauseMode(false);
   currentView = "results";
-  currentAnalysis = result;
+  currentAnalysis = normalizeAnalysisResult(result);
   currentPolicy = policy;
 
-  const risks = Array.isArray(result.risks) ? result.risks : [];
-  const rating = Number.isFinite(result.policyRating) ? result.policyRating : 10;
+  const risks = currentAnalysis.risks;
+  const rating = currentAnalysis.policyRating;
   const colorClass = ratingClass(rating);
 
   setBody(`
@@ -804,8 +1094,8 @@ function renderResults(result, policy = currentPolicy) {
         <span class="termscope-eyebrow">${escapeHtml(
           policyTypeLabel(policy?.type)
         )}</span>
-        <h2>${escapeHtml(policy?.sourceName || result.title || "Policy review")}</h2>
-        <p>${escapeHtml(result.overview || "")}</p>
+        <h2>${escapeHtml(policy?.sourceName || currentAnalysis.title || "Policy review")}</h2>
+        <p>${escapeHtml(currentAnalysis.overview || "")}</p>
       </div>
 
       <div class="termscope-rating-wrap">
@@ -813,7 +1103,7 @@ function renderResults(result, policy = currentPolicy) {
           <strong>${escapeHtml(rating)}</strong>
           <span>out of 10</span>
         </div>
-        <small>${escapeHtml(result.ratingLabel || "Policy rating")}</small>
+        <small>${escapeHtml(currentAnalysis.ratingLabel)}</small>
       </div>
     </div>
 
@@ -830,7 +1120,7 @@ function renderResults(result, policy = currentPolicy) {
             ${risks
               .map(
                 (risk, index) => `
-                  <article class="termscope-risk">
+                  <article class="termscope-risk ${escapeHtml(risk.severity || "medium")}">
                     <div class="termscope-risk-top">
                       <h3>${escapeHtml(risk.title || "Potential concern")}</h3>
                       <span class="termscope-severity ${escapeHtml(
@@ -838,25 +1128,31 @@ function renderResults(result, policy = currentPolicy) {
                       )}">${escapeHtml(risk.severity || "medium")}</span>
                     </div>
 
-                    <p class="termscope-short-summary">
-                      ${escapeHtml(
-                        risk.shortSummary || risk.plainMeaning || risk.explanation || ""
-                      )}
-                    </p>
+                    <p class="termscope-short-summary">${escapeHtml(
+                      risk.shortSummary || risk.plainMeaning || ""
+                    )}</p>
 
                     ${
                       risk.plainMeaning
-                        ? `<p><strong>What it means:</strong> ${escapeHtml(
+                        ? `<div class="termscope-risk-explanation"><strong>What it means</strong><p>${escapeHtml(
                             risk.plainMeaning
-                          )}</p>`
+                          )}</p></div>`
+                        : ""
+                    }
+
+                    ${
+                      risk.whyItMatters
+                        ? `<div class="termscope-risk-explanation"><strong>Why it matters</strong><p>${escapeHtml(
+                            risk.whyItMatters
+                          )}</p></div>`
                         : ""
                     }
 
                     ${
                       risk.action
-                        ? `<p class="termscope-action"><strong>What you can do:</strong> ${escapeHtml(
+                        ? `<div class="termscope-risk-explanation termscope-action"><strong>What you can do</strong><p>${escapeHtml(
                             risk.action
-                          )}</p>`
+                          )}</p></div>`
                         : ""
                     }
 
@@ -869,7 +1165,7 @@ function renderResults(result, policy = currentPolicy) {
                             type="button"
                           >
                             ${externalSvg}
-                            Read and highlight this clause
+                            Read this clause with guided summaries
                           </button>
                         `
                         : ""
@@ -884,7 +1180,7 @@ function renderResults(result, policy = currentPolicy) {
           <div class="termscope-empty-state termscope-safe-state">
             <div class="termscope-empty-icon">${shieldSvg}</div>
             <h2>No major problems found</h2>
-            <p>The AI did not identify a serious issue in your selected categories. It can still miss context.</p>
+            <p>The AI did not identify a material concern in your selected categories. It can still miss context.</p>
           </div>
         `
     }
@@ -895,41 +1191,39 @@ function renderResults(result, policy = currentPolicy) {
     </div>
 
     <div class="termscope-disclaimer">
-      AI can make mistakes. TermScope is informational and is not legal advice.
+      AI can make mistakes. TermScopeAI is informational and is not legal advice.
     </div>
   `);
 
   host.querySelector("#termscope-back-btn").addEventListener("click", renderPolicyPicker);
 
-  host
-    .querySelectorAll(".termscope-view-clause")
-    .forEach((button) => {
-      button.addEventListener("click", async () => {
-        const risk = risks[Number(button.dataset.riskIndex)];
+  host.querySelectorAll(".termscope-view-clause").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const activeIndex = Number(button.dataset.riskIndex);
 
-        await chrome.runtime.sendMessage({
-          type: "TERMSCOPE_OPEN_CLAUSE",
-          clause: {
-            ...risk,
-            policyRating: rating,
-            ratingLabel: result.ratingLabel,
-            policySourceName: policy?.sourceName,
-            policyType: policy?.type,
-            sourceUrl: risk.sourceUrl
-          }
-        });
+      await chrome.runtime.sendMessage({
+        type: "TERMSCOPE_OPEN_CLAUSE",
+        clauses: risks,
+        activeIndex,
+        policyRating: rating,
+        ratingLabel: currentAnalysis.ratingLabel,
+        policySourceName: policy?.sourceName,
+        policyType: policy?.type
       });
     });
+  });
 }
 
 function renderError(message) {
+  destroyClauseNavigator();
+  setClauseMode(false);
   currentView = "error";
 
   setBody(`
     ${backButtonHtml()}
 
     <div class="termscope-error">
-      <strong>TermScope could not finish the analysis.</strong>
+      <strong>TermScopeAI could not finish the analysis.</strong>
       <p>${escapeHtml(message)}</p>
     </div>
 
@@ -950,8 +1244,8 @@ function returnFromSettings() {
     return;
   }
 
-  if (settingsReturnView === "clause" && currentClauseRequest) {
-    renderClauseDetail(currentClauseRequest, Boolean(document.querySelector(".termscope-highlight, .termscope-clause-block-highlight")));
+  if (settingsReturnView === "clause" && currentClauseRequest && clauseNavigator) {
+    activateClauseIndex(clauseNavigator.activeIndex, { scroll: false });
     return;
   }
 
@@ -975,12 +1269,12 @@ function renderSettings() {
 
     <div class="termscope-settings">
       <h2>Settings</h2>
-      <p class="termscope-muted">Choose what TermScope focuses on.</p>
+      <p class="termscope-muted">Choose what TermScopeAI focuses on.</p>
 
       <label class="termscope-setting">
         <span>
-          Show policy shields
-          <small>Display a shield beside every Terms or Privacy link</small>
+          Show one policy shield
+          <small>Display one shield for all Terms and Privacy links on a page</small>
         </span>
         <input id="ts-enabled" type="checkbox" ${settings.enabled ? "checked" : ""}>
       </label>
@@ -1032,8 +1326,9 @@ function renderSettings() {
       ...host.querySelectorAll(".termscope-priority input:checked")
     ].map((input) => input.value);
 
+    analysisCache.clear();
     await chrome.storage.sync.set({ settings });
-    syncPolicyTriggers();
+    await syncPolicyTriggers();
     returnFromSettings();
   });
 }
@@ -1045,10 +1340,23 @@ function normalizeForSearch(value) {
     .trim();
 }
 
+function significantWords(value) {
+  const ignored = new Set([
+    "the", "and", "that", "this", "with", "from", "your", "you", "for",
+    "are", "may", "will", "our", "their", "have", "not", "but", "can",
+    "any", "all", "such", "when", "where", "into", "than", "then"
+  ]);
+
+  return normalizeForSearch(value)
+    .replace(/[^a-z0-9 ]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2 && !ignored.has(word));
+}
+
 function visibleTextNode(node) {
   const element = node.parentElement;
   if (!element) return false;
-  if (element.closest("script,style,noscript,textarea,input,mark.termscope-highlight")) {
+  if (element.closest("script,style,noscript,textarea,input,mark.termscope-highlight,#termscope-widget-host")) {
     return false;
   }
 
@@ -1056,34 +1364,98 @@ function visibleTextNode(node) {
   return style.display !== "none" && style.visibility !== "hidden";
 }
 
-function findBestClauseElement(quote) {
-  const candidates = [
-    normalizeForSearch(quote),
-    normalizeForSearch(quote).slice(0, 240),
-    normalizeForSearch(quote).slice(0, 150),
-    normalizeForSearch(quote).slice(0, 90)
-  ].filter((value) => value.length >= 35);
+function collectSearchRoots() {
+  const roots = [document];
+  const queue = [document.documentElement];
 
-  const elements = [
-    ...document.querySelectorAll(
-      "p, li, blockquote, dd, td, section, article, [role='main'] div, main div"
-    )
-  ];
+  while (queue.length) {
+    const node = queue.shift();
+    if (!node?.querySelectorAll) continue;
+
+    for (const element of node.querySelectorAll("*")) {
+      if (element.shadowRoot) {
+        roots.push(element.shadowRoot);
+        queue.push(element.shadowRoot);
+      }
+    }
+  }
+
+  return roots;
+}
+
+function queryAcrossRoots(selector) {
+  const results = [];
+
+  for (const root of collectSearchRoots()) {
+    results.push(...root.querySelectorAll(selector));
+  }
+
+  return results;
+}
+
+function quoteCandidates(quote) {
+  const normalized = normalizeForSearch(quote);
+  const sentences = normalized
+    .split(/(?<=[.!?;])\s+/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 45)
+    .sort((a, b) => b.length - a.length);
+
+  return [
+    normalized,
+    ...sentences,
+    normalized.slice(0, 300),
+    normalized.slice(0, 220),
+    normalized.slice(0, 150),
+    normalized.slice(0, 95)
+  ].filter((value, index, array) => value.length >= 35 && array.indexOf(value) === index);
+}
+
+function findBestClauseElement(quote) {
+  const candidates = quoteCandidates(quote);
+  const quoteWords = new Set(significantWords(quote));
+  const elements = queryAcrossRoots(
+    "p, li, blockquote, dd, dt, td, th, section, article, [role='main'] div, main div, [data-testid]"
+  );
 
   let best = null;
 
   for (const element of elements) {
-    if (element.closest("#termscope-widget-host")) continue;
+    if (element.closest?.("#termscope-widget-host")) continue;
 
     const text = normalizeForSearch(element.innerText || element.textContent);
-    if (text.length < 35 || text.length > 5000) continue;
+    if (text.length < 35 || text.length > 7000) continue;
 
-    for (const candidate of candidates) {
-      if (!text.includes(candidate)) continue;
+    let score = 0;
+    let candidate = "";
 
-      if (!best || text.length < best.textLength) {
-        best = { element, candidate, textLength: text.length };
+    for (const option of candidates) {
+      if (text.includes(option)) {
+        const exactScore = 1000 + option.length * 2 - Math.min(text.length, 5000) / 20;
+        if (exactScore > score) {
+          score = exactScore;
+          candidate = option;
+        }
       }
+    }
+
+    if (!score && quoteWords.size >= 5) {
+      const textWords = new Set(significantWords(text));
+      let overlap = 0;
+
+      for (const word of quoteWords) {
+        if (textWords.has(word)) overlap += 1;
+      }
+
+      const ratio = overlap / quoteWords.size;
+      if (ratio >= 0.62) {
+        score = ratio * 500 - Math.min(text.length, 5000) / 35;
+        candidate = candidates[candidates.length - 1];
+      }
+    }
+
+    if (score && (!best || score > best.score)) {
+      best = { element, candidate, score, textLength: text.length };
     }
   }
 
@@ -1131,13 +1503,12 @@ function buildTextMap(root) {
     }
   }
 
-  return {
-    text: text.trim(),
-    map
-  };
+  return { text: text.trim(), map };
 }
 
 function markTextInsideElement(element, candidate) {
+  if (!candidate) return null;
+
   const { text, map } = buildTextMap(element);
   const target = normalizeForSearch(candidate);
   const index = text.indexOf(target);
@@ -1165,43 +1536,87 @@ function markTextInsideElement(element, candidate) {
   }
 }
 
+function clearHighlightTimers() {
+  clearTimeout(highlightTimer);
+  clearTimeout(highlightFadeTimer);
+  highlightTimer = null;
+  highlightFadeTimer = null;
+}
+
 function clearClauseHighlights() {
-  document.querySelectorAll("mark.termscope-highlight").forEach((mark) => {
+  clearHighlightTimers();
+
+  queryAcrossRoots("mark.termscope-highlight").forEach((mark) => {
+    const parent = mark.parentNode;
     mark.replaceWith(...mark.childNodes);
+    parent?.normalize?.();
   });
 
-  document.querySelectorAll(".termscope-clause-block-highlight").forEach((element) => {
-    element.classList.remove("termscope-clause-block-highlight");
+  queryAcrossRoots(".termscope-clause-block-highlight").forEach((element) => {
+    element.classList.remove(
+      "termscope-clause-block-highlight",
+      "termscope-highlight-fading"
+    );
+    if (element.id === "termscope-highlight-target") element.removeAttribute("id");
   });
 }
 
-function locateAndHighlightClause(quote) {
+function scheduleHighlightRemoval() {
+  clearHighlightTimers();
+
+  highlightFadeTimer = setTimeout(() => {
+    queryAcrossRoots(".termscope-highlight, .termscope-clause-block-highlight").forEach(
+      (element) => element.classList.add("termscope-highlight-fading")
+    );
+  }, HIGHLIGHT_VISIBLE_MS);
+
+  highlightTimer = setTimeout(() => {
+    clearClauseHighlights();
+  }, HIGHLIGHT_VISIBLE_MS + HIGHLIGHT_FADE_MS);
+}
+
+function highlightClauseMatch(match, scroll = false) {
   clearClauseHighlights();
+  if (!match?.element?.isConnected) return null;
 
-  const best = findBestClauseElement(quote);
-  if (!best) return null;
-
-  const mark = markTextInsideElement(best.element, best.candidate);
-  const target = mark || best.element;
+  const mark = markTextInsideElement(match.element, match.candidate);
+  const target = mark || match.element;
 
   if (!mark) {
-    best.element.classList.add("termscope-clause-block-highlight");
-    best.element.id = "termscope-highlight-target";
+    match.element.classList.add("termscope-clause-block-highlight");
+    match.element.id = "termscope-highlight-target";
   }
 
-  target.scrollIntoView({
-    behavior: "smooth",
-    block: "center"
-  });
+  if (scroll) {
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 
+  scheduleHighlightRemoval();
   return target;
 }
 
-function renderClauseDetail(request, located) {
+function clauseProgressText(index, total) {
+  return total > 1 ? `Clause ${index + 1} of ${total}` : "Selected clause";
+}
+
+function renderClauseDetail(request, located, index = 0, total = 1) {
   currentView = "clause";
   currentClauseRequest = request;
+  setClauseMode(true);
+
+  const canPrevious = index > 0;
+  const canNext = index < total - 1;
 
   setBody(`
+    <div class="termscope-clause-progress">
+      <span>${escapeHtml(clauseProgressText(index, total))}</span>
+      ${
+        total > 1
+          ? `<small>Scroll the policy and the summary follows the closest reviewed clause.</small>`
+          : ""
+      }
+    </div>
+
     <div class="termscope-clause-head">
       <span class="termscope-severity ${escapeHtml(
         request.severity || "medium"
@@ -1244,35 +1659,139 @@ function renderClauseDetail(request, located) {
 
     <button class="termscope-primary" id="termscope-jump-clause" type="button">
       ${jumpSvg}
-      ${located ? "Jump to highlighted clause" : "Try to find the clause again"}
+      ${located ? "Jump to this clause" : "Try to find this clause again"}
     </button>
+
+    ${
+      total > 1
+        ? `
+          <div class="termscope-clause-nav">
+            <button id="termscope-prev-clause" type="button" ${canPrevious ? "" : "disabled"}>
+              ${previousSvg} Previous
+            </button>
+            <button id="termscope-next-clause" type="button" ${canNext ? "" : "disabled"}>
+              Next ${nextSvg}
+            </button>
+          </div>
+        `
+        : ""
+    }
 
     <p class="termscope-locator-status ${located ? "found" : "missing"}">
       ${
         located
-          ? "The matching clause is highlighted on this page."
-          : "The page may still be loading or may display the policy in a format that cannot be highlighted automatically."
+          ? "The clause is briefly highlighted with a soft marker that fades automatically."
+          : "The page may still be loading or may use a protected format that cannot be matched automatically."
       }
     </p>
   `);
 
   host.querySelector("#termscope-jump-clause").addEventListener("click", () => {
-    const existing = document.querySelector(
-      "#termscope-highlight-target, .termscope-clause-block-highlight"
-    );
-
-    if (existing) {
-      existing.scrollIntoView({ behavior: "smooth", block: "center" });
-      return;
-    }
-
-    const target = locateAndHighlightClause(request.quote);
-    renderClauseDetail(request, Boolean(target));
+    if (!clauseNavigator) return;
+    activateClauseIndex(clauseNavigator.activeIndex, { scroll: true, forceFind: true });
   });
+
+  host.querySelector("#termscope-prev-clause")?.addEventListener("click", () => {
+    activateClauseIndex(index - 1, { scroll: true });
+  });
+
+  host.querySelector("#termscope-next-clause")?.addEventListener("click", () => {
+    activateClauseIndex(index + 1, { scroll: true });
+  });
+}
+
+function nearestClauseIndex() {
+  if (!clauseNavigator) return -1;
+
+  const viewportCenter = innerHeight / 2;
+  let best = { index: -1, distance: Infinity };
+
+  clauseNavigator.matches.forEach((match, index) => {
+    const element = match?.element;
+    if (!element?.isConnected) return;
+
+    const rect = element.getBoundingClientRect();
+    const center = rect.top + Math.min(rect.height, innerHeight) / 2;
+    const distance = Math.abs(center - viewportCenter);
+
+    if (distance < best.distance) best = { index, distance };
+  });
+
+  return best.index;
+}
+
+function setupClauseScrollTracking() {
+  if (!clauseNavigator) return;
+
+  let scheduled = false;
+
+  clauseNavigator.scrollHandler = () => {
+    if (scheduled || clauseNavigator?.ignoreScrollUntil > Date.now()) return;
+    scheduled = true;
+
+    requestAnimationFrame(() => {
+      scheduled = false;
+      const nearest = nearestClauseIndex();
+
+      if (nearest >= 0 && nearest !== clauseNavigator?.activeIndex) {
+        activateClauseIndex(nearest, { scroll: false, fromScroll: true });
+      }
+    });
+  };
+
+  addEventListener("scroll", clauseNavigator.scrollHandler, true);
+}
+
+function activateClauseIndex(index, options = {}) {
+  if (!clauseNavigator) return;
+
+  const bounded = Math.max(0, Math.min(index, clauseNavigator.clauses.length - 1));
+  const clause = clauseNavigator.clauses[bounded];
+
+  if (!clause) return;
+
+  clauseNavigator.activeIndex = bounded;
+
+  if (options.forceFind || !clauseNavigator.matches[bounded]?.element?.isConnected) {
+    clauseNavigator.matches[bounded] = findBestClauseElement(clause.quote);
+  }
+
+  const match = clauseNavigator.matches[bounded];
+  const target = match ? highlightClauseMatch(match, Boolean(options.scroll)) : null;
+
+  if (options.scroll) {
+    clauseNavigator.ignoreScrollUntil = Date.now() + 1300;
+  }
+
+  renderClauseDetail(
+    clause,
+    Boolean(target || match),
+    bounded,
+    clauseNavigator.clauses.length
+  );
 }
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function findClauseMatches(clauses) {
+  const matches = Array(clauses.length).fill(null);
+
+  for (let attempt = 0; attempt < 18; attempt += 1) {
+    let remaining = 0;
+
+    clauses.forEach((clause, index) => {
+      if (matches[index]?.element?.isConnected) return;
+      matches[index] = findBestClauseElement(clause.quote);
+      if (!matches[index]) remaining += 1;
+    });
+
+    if (!remaining) break;
+    await delay(attempt < 5 ? 350 : 650);
+  }
+
+  return matches;
 }
 
 async function highlightRequestedClause() {
@@ -1283,21 +1802,35 @@ async function highlightRequestedClause() {
   const stored = await chrome.storage.local.get(key);
   const request = stored[key];
 
-  if (!request?.quote) return;
+  const clauses = Array.isArray(request?.clauses)
+    ? request.clauses.filter((clause) => clause?.quote)
+    : request?.quote
+      ? [request]
+      : [];
 
-  currentClauseRequest = request;
+  if (!clauses.length) return;
+
   showWidget();
-  renderClauseDetail(request, false);
+  setClauseMode(true);
+  currentClauseRequest = clauses[0];
+  renderClauseDetail(clauses[0], false, 0, clauses.length);
 
-  let target = null;
+  const matches = await findClauseMatches(clauses);
+  const activeIndex = Math.max(
+    0,
+    Math.min(Number(request.activeIndex) || 0, clauses.length - 1)
+  );
 
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    target = locateAndHighlightClause(request.quote);
-    if (target) break;
-    await delay(600);
-  }
+  clauseNavigator = {
+    clauses,
+    matches,
+    activeIndex,
+    ignoreScrollUntil: 0,
+    scrollHandler: null
+  };
 
-  renderClauseDetail(request, Boolean(target));
+  activateClauseIndex(activeIndex, { scroll: true });
+  setupClauseScrollTracking();
   await chrome.storage.local.remove(key);
 }
 
@@ -1319,13 +1852,23 @@ chrome.storage.sync.get("settings").then(({ settings: stored }) => {
     ...(stored || {})
   };
 
-  syncPolicyTriggers();
+  syncPolicyTriggers().catch(() => {});
 
-  const observer = new MutationObserver(scheduleTriggerSync);
+  const observer = new MutationObserver((mutations) => {
+    const changedOutsideWidget = mutations.some((mutation) => {
+      const target = mutation.target instanceof Element
+        ? mutation.target
+        : mutation.target?.parentElement;
+      return !target?.closest?.("#termscope-widget-host");
+    });
+
+    if (changedOutsideWidget) scheduleTriggerSync();
+  });
+
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true
   });
 
-  highlightRequestedClause();
+  highlightRequestedClause().catch(() => {});
 });

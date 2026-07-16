@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "TermScope AI",
-  "version": "5.0.0",
+  "name": "TermScopeAI",
+  "version": "6.0.0",
   "description": "Understand important risks in Terms of Use and Privacy Policies without leaving the page.",
   "permissions": [
     "storage",
@@ -16,7 +16,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Open TermScope",
+    "default_title": "Open TermScopeAI",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
